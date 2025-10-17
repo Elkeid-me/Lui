@@ -7,16 +7,14 @@ let main args =
     | [| path |] -> printfn "114514"
     | _ ->
         let result =
-            match run Parser.operatorParser.ExpressionParser "- 1000.0/1.0/10.0" with
-            | Success(a, _, _) ->
-                let a =
-                    match a.Inner with
-                    | ExprInner.Float f -> f
-                    | _ -> exit 1
+            runParserOnString
+                (Parser.ifElse .>> eof)
+                { retType = Void; Blocks = [ { InLoop = false } ] }
+                ""
+                @"if (1 + 114514 / 0) {
+    break;
+}"
 
-                a
-            | Failure(_, _, _) -> exit 1
-
-        printfn "-1000.0/1.0/10.0 == %f" result
+        printfn "%A" result
 
     0

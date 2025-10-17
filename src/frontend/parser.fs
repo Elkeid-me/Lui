@@ -5,6 +5,11 @@ open FParsec
 
 exception CompilerException of string
 
+type BlockInfo = { InLoop: bool }
+type FunInfo = { retType: Type; Blocks: BlockInfo list }
+
+let inLoopNow (state: FunInfo) = (List.head state.Blocks).InLoop
+
 let boolIntFun f a b = if f a b then 1 else 0
 
 let arithOpCheck fnInt fnFloat con (l: Expr) (r: Expr) =
@@ -112,7 +117,17 @@ let intAssignOpCheck con (l: Expr) (r: Expr) =
 
     { Inner = inner; Type = ty; Category = ValueCategory.LValue; IsConst = false }
 
-let pLiteral =
+let cxxComment = skipString "//" .>> manyCharsTill anyChar skipNewline
+let blockComment = skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
+
+let singleSpace = choice [ cxxComment; blockComment; skipAnyOf " \t\n" ]
+
+let ws = skipMany singleSpace
+
+let str s = pstring s .>> ws
+let ch c = pchar c .>> ws
+
+let literal =
     let makeFloat f =
         { Inner = f |> single |> ExprInner.Float
           Type = Type.Float
@@ -122,7 +137,27 @@ let pLiteral =
     let makeInt i =
         { Inner = ExprInner.Int i; Type = Type.Int; Category = ValueCategory.RValue; IsConst = true }
 
-    choice [ pfloat .>> spaces |>> makeFloat; pint32 .>> spaces |>> makeInt ]
+    let cvtInt (base_: int) int_ = System.Convert.ToInt32(int_, base_)
+    let subStr idx (str: string) = str.Substring idx
+
+    let pHexInt = regex @"0[xX][0-9a-fA-F]+" |>> (subStr 2 >> cvtInt 16 >> makeInt)
+    let pBinInt = regex @"0[bB][01]+" |>> (subStr 2 >> cvtInt 2 >> makeInt)
+    let pOctInt = regex @"0[0-7]*" |>> (cvtInt 8 >> makeInt)
+    let pDecInt = regex @"[1-9]\d*" |>> (int >> makeInt)
+
+    let pDecFloat =
+        regex @"(((\d*\.\d+)|(\d+\.))([eE][-+]?\d+)?)|((\d+)([eE][-+]?\d+))"
+        |>> (single >> makeFloat)
+
+    let pHexFloat =
+        regex @"0[xX]([0-9a-fA-F]*\.[0-9a-fA-F]+)|([0-9a-fA-F]+\.)|([0-9a-fA-F]+)[pP][+-]\d+"
+        |>> (HexFloat.SingleFromHexString >> makeFloat)
+
+    let pInt = choice [ pHexInt; pBinInt; pOctInt; pDecInt ] <?> "integer literal"
+    let pFloat = pHexFloat <|> pDecFloat <?> "floating-point literal"
+
+    pFloat <|> pInt .>> ws
+
 
 module Operators =
     type InfixOperatorDetails = { Symbol: string; Precedence: int; Assoc: Associativity; Map: Expr -> Expr -> Expr }
@@ -251,27 +286,91 @@ module Operators =
         [ { Symbol = "++"; Precedence = 13; Map = id }
           { Symbol = "--"; Precedence = 13; Map = id } ]
 
-let operatorParser = OperatorPrecedenceParser<Expr, unit, unit>()
-
-operatorParser.TermParser <- pLiteral
+let operatorParser = OperatorPrecedenceParser<Expr, unit, FunInfo>()
 
 Operators.infixOperators
 |> List.iter (fun details ->
     let operator =
-        InfixOperator(details.Symbol, spaces, details.Precedence, details.Assoc, details.Map)
+        InfixOperator(details.Symbol, ws, details.Precedence, details.Assoc, details.Map)
 
     operatorParser.AddOperator operator)
 
 Operators.prefixOperators
 |> List.iter (fun details ->
     let operator =
-        PrefixOperator(details.Symbol, spaces, details.Precedence, true, details.Map)
+        PrefixOperator(details.Symbol, ws, details.Precedence, true, details.Map)
 
     operatorParser.AddOperator operator)
 
 Operators.postfixOperators
 |> List.iter (fun details ->
     let operator =
-        PostfixOperator(details.Symbol, spaces, details.Precedence, true, details.Map)
+        PostfixOperator(details.Symbol, ws, details.Precedence, true, details.Map)
 
     operatorParser.AddOperator operator)
+
+let keyword str =
+    pstring str .>> notFollowedBy (regex @"[a-zA-Z0-9_]") .>> ws
+
+let expr = operatorParser.ExpressionParser .>> ws
+let parenExpr = between (ch '(') (ch ')') expr
+
+let block, blockRef = createParserForwardedToRef ()
+let statement, stmtRef = createParserForwardedToRef ()
+
+operatorParser.TermParser <- literal <|> parenExpr
+
+let break_ =
+    keyword "break" .>> ch ';' >>. getUserState
+    >>= fun state ->
+        match inLoopNow state with
+        | false -> fail "`break` statement must be used in loop."
+        | true -> preturn Break
+
+let continue_ =
+    keyword "continue" .>> ch ';' >>. getUserState
+    >>= fun state ->
+        match inLoopNow state with
+        | false -> fail "`continue` statement must be used in loop."
+        | true -> preturn Continue
+
+let return_ =
+    keyword "return" >>. getUserState
+    >>= fun state ->
+        match state.retType with
+        | Type.Int
+        | Type.Float ->
+            expr
+            >>= fun expr ->
+                match expr.Type with
+                | Type.Int
+                | Type.Float -> preturn expr
+                | _ -> fail "Expecting an expression of type `int` or `float`."
+                .>> ch ';'
+                |>> (Some >> Return)
+        | Void -> ch ';' >>% Return None
+        | _ -> fail "Unknown error."
+
+let blockItem = choice [ block |>> Block; statement |>> Statement ]
+let ifWhileHelper = choice [ block; statement |>> (Statement >> List.singleton) ]
+
+let condExpr =
+    parenExpr
+    >>= fun expr ->
+        match expr.Type with
+        | Type.Int
+        | Type.Float -> preturn expr
+        | _ -> fail "Condition should be 'int' or 'float' type"
+
+let ifElse =
+    tuple3 (keyword "if" >>. condExpr) ifWhileHelper (opt (keyword "else" >>. ifWhileHelper) |>> Option.defaultValue [])
+    |>> If
+
+let whileLoop = keyword "while" >>. condExpr .>>. ifWhileHelper |>> While
+
+do
+    blockRef.Value <- between (ch '{') (ch '}') (many blockItem)
+
+    stmtRef.Value <-
+        let exprStmt = expr .>> ch ';' |>> Statement.Expr
+        choice [ whileLoop; ifElse; continue_; break_; return_; exprStmt ]
