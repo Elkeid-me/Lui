@@ -148,7 +148,7 @@ let literal =
         |>> (single >> makeFloat)
 
     let pHexFloat =
-        regex @"0[xX]([0-9a-fA-F]*\.[0-9a-fA-F]+)|([0-9a-fA-F]+\.)|([0-9a-fA-F]+)[pP][+-]\d+"
+        regex @"0[xX](([0-9a-fA-F]*\.[0-9a-fA-F]+)|([0-9a-fA-F]+\.))|([0-9a-fA-F]+)[pP][+-]\d+"
         |>> (HexFloat.SingleFromHexString >> makeFloat)
 
     let pInt = choiceL [ pHexInt; pBinInt; pOctInt; pDecInt ] "integer literal"
@@ -338,12 +338,12 @@ let return_ =
         match state.retType with
         | Type.Int
         | Type.Float ->
-            expr
+            expr .>> ch ';'
             >>= fun expr ->
-                match expr.Type with
-                | Type.Int
-                | Type.Float -> preturn expr
-                | _ -> fail "Expecting an expression of type `int` or `float`." .>> ch ';'
+                (if typeConvertible expr.Type state.retType then
+                     preturn expr
+                 else
+                     fail "Return expression type mismatch.")
                 |>> (Some >> Return)
         | Void -> ch ';' >>% Return None
         | _ -> fail "Unknown error."
