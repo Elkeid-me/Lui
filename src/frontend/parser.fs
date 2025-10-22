@@ -119,9 +119,7 @@ let intAssignOpCheck con (l: Expr) (r: Expr) =
 
 let cxxComment = skipString "//" .>> manyCharsTill anyChar skipNewline
 let blockComment = skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
-
-let singleSpace = choice [ cxxComment; blockComment; skipAnyOf " \t\n" ]
-
+let singleSpace = choiceL [ cxxComment; blockComment; skipAnyOf " \t\n" ] ""
 let ws = skipMany singleSpace
 
 let str s = pstring s .>> ws
@@ -153,7 +151,7 @@ let literal =
         regex @"0[xX]([0-9a-fA-F]*\.[0-9a-fA-F]+)|([0-9a-fA-F]+\.)|([0-9a-fA-F]+)[pP][+-]\d+"
         |>> (HexFloat.SingleFromHexString >> makeFloat)
 
-    let pInt = choice [ pHexInt; pBinInt; pOctInt; pDecInt ] <?> "integer literal"
+    let pInt = choiceL [ pHexInt; pBinInt; pOctInt; pDecInt ] "integer literal"
     let pFloat = pHexFloat <|> pDecFloat <?> "floating-point literal"
 
     pFloat <|> pInt .>> ws
@@ -238,7 +236,7 @@ module Operators =
             Assoc = Associativity.Left
             Map = arithOpCheck (leiArithInt (*)) (leiArithFloat (*)) Mul }
           { Symbol = "/"
-            Precedence = 11
+            Precedence = 12
             Assoc = Associativity.Right
             Map = arithOpCheck (leiArithInt (/)) (leiArithFloat (/)) Div }
           { Symbol = "%"; Precedence = 11; Assoc = Associativity.Left; Map = intOpCheck (%) Mod } ]
@@ -312,7 +310,7 @@ Operators.postfixOperators
 let keyword str =
     pstring str .>> notFollowedBy (regex @"[a-zA-Z0-9_]") .>> ws
 
-let expr = operatorParser.ExpressionParser .>> ws
+let expr = operatorParser.ExpressionParser .>> ws <?> "an expression."
 let parenExpr = between (ch '(') (ch ')') expr
 
 let block, blockRef = createParserForwardedToRef ()
@@ -345,8 +343,7 @@ let return_ =
                 match expr.Type with
                 | Type.Int
                 | Type.Float -> preturn expr
-                | _ -> fail "Expecting an expression of type `int` or `float`."
-                .>> ch ';'
+                | _ -> fail "Expecting an expression of type `int` or `float`." .>> ch ';'
                 |>> (Some >> Return)
         | Void -> ch ';' >>% Return None
         | _ -> fail "Unknown error."
@@ -360,7 +357,7 @@ let condExpr =
         match expr.Type with
         | Type.Int
         | Type.Float -> preturn expr
-        | _ -> fail "Condition should be 'int' or 'float' type"
+        | _ -> fail "Expecting an expression of type `int` or `float`."
 
 let ifElse =
     tuple3 (keyword "if" >>. condExpr) ifWhileHelper (opt (keyword "else" >>. ifWhileHelper) |>> Option.defaultValue [])
