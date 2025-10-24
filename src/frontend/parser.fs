@@ -8,7 +8,14 @@ exception CompilerException of string
 type BlockInfo = { InLoop: bool }
 type FunInfo = { retType: Type; Blocks: BlockInfo list }
 
-let inLoopNow (state: FunInfo) = (List.head state.Blocks).InLoop
+let inLoop (state: FunInfo) = (List.head state.Blocks).InLoop
+
+let enterBlock loopNow (state: FunInfo) =
+    let inLoop = if loopNow then true else inLoop state
+    { state with Blocks = { InLoop = inLoop } :: state.Blocks }
+
+let exitBlock (state: FunInfo) =
+    { state with Blocks = List.tail state.Blocks }
 
 let boolIntFun f a b = if f a b then 1 else 0
 
@@ -313,7 +320,7 @@ let keyword str =
 let expr = operatorParser.ExpressionParser .>> ws <?> "an expression."
 let parenExpr = between (ch '(') (ch ')') expr
 
-let block, blockRef = createParserForwardedToRef ()
+let blockNoRegion, blockNoRegionRef = createParserForwardedToRef ()
 let statement, stmtRef = createParserForwardedToRef ()
 
 operatorParser.TermParser <- literal <|> parenExpr
@@ -321,35 +328,43 @@ operatorParser.TermParser <- literal <|> parenExpr
 let break_ =
     keyword "break" .>> ch ';' >>. getUserState
     >>= fun state ->
-        match inLoopNow state with
-        | false -> fail "`break` statement must be used in loop."
+        match inLoop state with
         | true -> preturn Break
+        | false -> fail "`break` statement must be used in loop."
 
 let continue_ =
     keyword "continue" .>> ch ';' >>. getUserState
     >>= fun state ->
-        match inLoopNow state with
-        | false -> fail "`continue` statement must be used in loop."
+        match inLoop state with
         | true -> preturn Continue
+        | false -> fail "`continue` statement must be used in loop."
 
 let return_ =
+    let checkExpr state (expr: Expr) =
+        if typeConvertible expr.Type state.retType then
+            preturn (Some expr)
+        else
+            fail "Return expression type mismatch."
+
     keyword "return" >>. getUserState
     >>= fun state ->
         match state.retType with
-        | Type.Int
-        | Type.Float ->
-            expr .>> ch ';'
-            >>= fun expr ->
-                (if typeConvertible expr.Type state.retType then
-                     preturn expr
-                 else
-                     fail "Return expression type mismatch.")
-                |>> (Some >> Return)
         | Void -> ch ';' >>% Return None
-        | _ -> fail "Unknown error."
+        | _ -> expr .>> ch ';' >>= checkExpr state |>> Return
+
+let block =
+    between (updateUserState (enterBlock false)) (updateUserState exitBlock) blockNoRegion
 
 let blockItem = choice [ block |>> Block; statement |>> Statement ]
-let ifWhileHelper = choice [ block; statement |>> (Statement >> List.singleton) ]
+
+let ifWhileHelper =
+    choice [ blockNoRegion; statement |>> (Statement >> List.singleton) ]
+
+let ifHelper =
+    between (updateUserState (enterBlock false)) (updateUserState exitBlock) ifWhileHelper
+
+let whileHelper =
+    between (updateUserState (enterBlock true)) (updateUserState exitBlock) ifWhileHelper
 
 let condExpr =
     parenExpr
@@ -360,13 +375,13 @@ let condExpr =
         | _ -> fail "Expecting an expression of type `int` or `float`."
 
 let ifElse =
-    tuple3 (keyword "if" >>. condExpr) ifWhileHelper (opt (keyword "else" >>. ifWhileHelper) |>> Option.defaultValue [])
+    tuple3 (keyword "if" >>. condExpr) ifHelper (opt (keyword "else" >>. ifHelper) |>> Option.defaultValue [])
     |>> If
 
-let whileLoop = keyword "while" >>. condExpr .>>. ifWhileHelper |>> While
+let whileLoop = keyword "while" >>. condExpr .>>. whileHelper |>> While
 
 do
-    blockRef.Value <- between (ch '{') (ch '}') (many blockItem)
+    blockNoRegionRef.Value <- between (ch '{') (ch '}') (many blockItem)
 
     stmtRef.Value <-
         let exprStmt = expr .>> ch ';' |>> Statement.Expr
