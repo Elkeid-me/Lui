@@ -320,7 +320,7 @@ let keyword str =
 let expr = operatorParser.ExpressionParser .>> ws <?> "an expression."
 let parenExpr = between (ch '(') (ch ')') expr
 
-let blockNoRegion, blockNoRegionRef = createParserForwardedToRef ()
+let block, blockRef = createParserForwardedToRef ()
 let statement, stmtRef = createParserForwardedToRef ()
 
 operatorParser.TermParser <- literal <|> parenExpr
@@ -352,10 +352,9 @@ let return_ =
         | Void -> ch ';' >>% Return None
         | _ -> expr .>> ch ';' >>= checkExpr state |>> Return
 
-let block =
-    between (updateUserState (enterBlock false)) (updateUserState exitBlock) blockNoRegion
-
 let blockItem = choice [ block |>> Block; statement |>> Statement ]
+
+let blockNoRegion = between (ch '{') (ch '}') (many blockItem)
 
 let ifWhileHelper =
     choice [ blockNoRegion; statement |>> (Statement >> List.singleton) ]
@@ -381,8 +380,10 @@ let ifElse =
 let whileLoop = keyword "while" >>. condExpr .>>. whileHelper |>> While
 
 do
-    blockNoRegionRef.Value <- between (ch '{') (ch '}') (many blockItem)
+    blockRef.Value <-
+        between (ch '{' >>. updateUserState (enterBlock false)) (ch '{' >>. updateUserState exitBlock) (many blockItem)
 
     stmtRef.Value <-
         let exprStmt = expr .>> ch ';' |>> Statement.Expr
-        choice [ whileLoop; ifElse; continue_; break_; return_; exprStmt ]
+        let emptyStmt = ch ';' >>% Empty
+        choice [ whileLoop; ifElse; continue_; break_; return_; exprStmt; emptyStmt ]

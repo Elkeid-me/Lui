@@ -84,6 +84,7 @@ type Statement =
     | Return of Expr option
     | Break
     | Continue
+    | Empty
 
 and BlockItem =
     | Statement of Statement
