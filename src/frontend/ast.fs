@@ -18,8 +18,8 @@ let typeConvertible tya tyb =
     | _ -> false
 
 type ValueCategory =
-    | LValue = 1
-    | RValue = 2
+    | LValue
+    | RValue
 
 type ExprInner =
     | Mul of Expr * Expr
@@ -71,11 +71,7 @@ type ExprInner =
     | Func of Handler * Expr list
     | ArrayElem of Handler * Expr list
 
-and Expr =
-    { Inner: ExprInner
-      Type: Type
-      Category: ValueCategory
-      IsConst: bool }
+and Expr = { Inner: ExprInner; Type: Type; Category: ValueCategory; IsConst: bool }
 
 type Statement =
     | Expr of Expr
@@ -93,8 +89,7 @@ and BlockItem =
 
 and Block = BlockItem list
 
-type FunctionInfo =
-    { Block: Block; ArgHandlers: Handler list }
+type FunctionInfo = { Block: Block; ArgHandlers: Handler list }
 
 type InitListItem =
     | Expr of Expr
@@ -117,13 +112,6 @@ type Init =
     | List of InitList
     | ConstList of ConstInitList
 
-type Definition =
-    { init: Init option
-      Type: Type
-      ID: string
-      IsGlobal: bool
-      IsArg: bool }
+type Definition = { Init: Init option; Type: Type; ID: string; IsGlobal: bool; IsArg: bool }
 
-type TranslationUnit =
-    { Ast: Handler list
-      SymbolTable: Map<Handler, Definition> }
+type TranslationUnit = { Ast: Handler list; SymbolTable: Map<Handler, Definition> }
