@@ -19,7 +19,13 @@ let main args =
                     ""
                     input
 
-            printfn "%A" result
+            match result with
+            | Success ((ast, state), _, _) ->
+                printfn "Parse succeeded:"
+                printfn "AST:\n%A" ast
+                printfn "Symbol table:\n%A" state
+            | Failure (errMsg, _, _) ->
+                printfn "Parse failed: %s" errMsg
 
         testParser Parser.Definitions.funcDeclDef "int f(int return1, int [][2]) { return1 + 1; }"
 
