@@ -156,7 +156,7 @@ let intAssignOpCheck con (l: Expr) (r: Expr) =
 
     { Inner = inner; Type = ty; Category = LValue; IsConst = false }
 
-let cxxComment = skipString "//" .>> manyCharsTill anyChar skipNewline
+let cxxComment = skipString "//" .>> manyCharsTill anyChar (skipNewline <|> eof)
 let blockComment = skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
 let singleSpace = choiceL [ cxxComment; blockComment; skipAnyOf " \t\n" ] ""
 let ws = skipMany singleSpace

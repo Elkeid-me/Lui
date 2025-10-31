@@ -10,7 +10,7 @@ let main args =
         let testParser parser input =
             let result =
                 runParserOnFile
-                    (Parser.ws >>. parser)
+                    (Parser.ws >>. parser .>> eof)
                     { Counter = Parser.createCounter ()
                       SymbolTable = HashMap()
                       RetType = Void
