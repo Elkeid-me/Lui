@@ -6,27 +6,23 @@ type HashMap<'K, 'V> = System.Collections.Generic.Dictionary<'K, 'V>
 [<EntryPoint>]
 let main args =
     match args with
-    | [| path |] -> printfn "114514"
-    | _ ->
+    | [| path |] ->
         let testParser parser input =
             let result =
-                runParserOnString
-                    (Parser.ws >>. parser .>>. getUserState)
+                runParserOnFile
+                    (Parser.ws >>. parser)
                     { Counter = Parser.createCounter ()
                       SymbolTable = HashMap()
                       RetType = Void
                       Blocks = [ { SymbolTable = HashMap(); InLoop = false } ] }
-                    ""
                     input
+                    System.Text.Encoding.UTF8
 
             match result with
-            | Success ((ast, state), _, _) ->
-                printfn "Parse succeeded:"
-                printfn "AST:\n%A" ast
-                printfn "Symbol table:\n%A" state
-            | Failure (errMsg, _, _) ->
-                printfn "Parse failed: %s" errMsg
+            | Success(ast, state, _) -> printfn "Parse succeeded:\nAST:\n%A\nSymbol table:\n%A" ast state
+            | Failure(errMsg, _, _) -> printfn "Parse failed: %s" errMsg
 
-        testParser Parser.Definitions.funcDeclDef "int f(int return1, int [][2]) { return1 + 1; }"
+        testParser Parser.Definitions.funcDeclDef path
+    | _ -> printfn "Please provide a file path."
 
     0

@@ -10,11 +10,14 @@ type Type =
     | Array of Type * uint64 list
     | Function of Type * Type list
 
-let typeConvertible tya tyb =
-    match tya, tyb with
+let rec typeConvertible type_l type_r =
+    match type_l, type_r with
     | Int, Int
     | Int, Float
     | Float, Int -> true
+    | Pointer(base_l, dims_l), Pointer(base_r, dims_r) when dims_l = dims_r -> typeConvertible base_l base_r
+    | Pointer(base_p, dims_p), Array(base_a, dims_a)
+    | Array(base_a, dims_a), Pointer(base_p, dims_p) when dims_p = List.tail dims_a -> typeConvertible base_p base_a
     | _ -> false
 
 type ValueCategory =

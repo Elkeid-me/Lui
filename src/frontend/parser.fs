@@ -60,7 +60,7 @@ let searchDef context identifier =
 
 let boolIntFun f a b = if f a b then 1 else 0
 
-let arithOpCheck fnInt fnFloat con (l: Expr) (r: Expr) =
+let arithOpCheck fnInt fnFloat constructor (l: Expr) (r: Expr) =
     let ty =
         match l.Type, r.Type with
         | Type.Int, Type.Int -> Type.Int
@@ -75,11 +75,11 @@ let arithOpCheck fnInt fnFloat con (l: Expr) (r: Expr) =
         | ExprInner.Float l, ExprInner.Int r -> ExprInner.Float(fnFloat l (single r))
         | ExprInner.Int l, ExprInner.Float r -> ExprInner.Float(fnFloat (single l) r)
         | ExprInner.Float l, ExprInner.Float r -> ExprInner.Float(fnFloat l r)
-        | _ -> con (l, r)
+        | _ -> constructor (l, r)
 
     { Inner = inner; Type = ty; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
-let intOpCheck fnInt con (l: Expr) (r: Expr) =
+let intOpCheck fnInt constructor (l: Expr) (r: Expr) =
     match l.Type, r.Type with
     | Type.Int, Type.Int -> ()
     | _ -> raise (CompilerException "Invalid type of operands.")
@@ -87,11 +87,11 @@ let intOpCheck fnInt con (l: Expr) (r: Expr) =
     let inner =
         match l.Inner, r.Inner with
         | ExprInner.Int l, ExprInner.Int r -> ExprInner.Int(fnInt l r)
-        | _ -> con (l, r)
+        | _ -> constructor (l, r)
 
     { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
-let logicOpCheck fnLogic con (l: Expr) (r: Expr) =
+let logicOpCheck fnLogic constructor (l: Expr) (r: Expr) =
     match l.Type, r.Type with
     | Type.Int, Type.Int
     | Type.Float, Type.Int
@@ -105,11 +105,11 @@ let logicOpCheck fnLogic con (l: Expr) (r: Expr) =
         | ExprInner.Float l, ExprInner.Int r -> ExprInner.Int(fnLogic (l <> 0.0f) (r <> 0))
         | ExprInner.Int l, ExprInner.Float r -> ExprInner.Int(fnLogic (l <> 0) (r <> 0.0f))
         | ExprInner.Float l, ExprInner.Float r -> ExprInner.Int(fnLogic (l <> 0.0f) (r <> 0.0f))
-        | _ -> con (l, r)
+        | _ -> constructor (l, r)
 
     { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
-let relOpCheck fnIntComp fnFloatComp con (l: Expr) (r: Expr) =
+let relOpCheck fnIntComp fnFloatComp constructor (l: Expr) (r: Expr) =
     match l.Type, r.Type with
     | Type.Int, Type.Int
     | Type.Float, Type.Int
@@ -123,7 +123,7 @@ let relOpCheck fnIntComp fnFloatComp con (l: Expr) (r: Expr) =
         | ExprInner.Float l, ExprInner.Int r -> ExprInner.Int(fnFloatComp l (single r))
         | ExprInner.Int l, ExprInner.Float r -> ExprInner.Int(fnFloatComp (single l) r)
         | ExprInner.Float l, ExprInner.Float r -> ExprInner.Int(fnFloatComp l r)
-        | _ -> con (l, r)
+        | _ -> constructor (l, r)
 
     { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
@@ -165,11 +165,11 @@ let str s = pstring s .>> ws
 let ch c = pchar c .>> ws
 
 let literal =
-    let makeFloat f =
-        { Inner = f |> single |> ExprInner.Float; Type = Type.Float; Category = RValue; IsConst = true }
+    let makeFloat x =
+        { Inner = x |> single |> ExprInner.Float; Type = Type.Float; Category = RValue; IsConst = true }
 
-    let makeInt i =
-        { Inner = ExprInner.Int i; Type = Type.Int; Category = RValue; IsConst = true }
+    let makeInt x =
+        { Inner = ExprInner.Int x; Type = Type.Int; Category = RValue; IsConst = true }
 
     let cvtInt (base_: int) int_ = System.Convert.ToInt32(int_, base_)
     let subStr idx (str: string) = str.Substring idx
@@ -278,6 +278,21 @@ module Operators =
 
     type UnaryOperatorDetails = { Symbol: string; Precedence: int; Map: Expr -> Expr }
 
+    let checkArithUnary fnInt fnFloat constructor (expr: Expr) =
+        let ty =
+            match expr.Type with
+            | Type.Int -> Type.Int
+            | Type.Float -> Type.Float
+            | _ -> raise (CompilerException "Invalid type of operand.")
+
+        let inner =
+            match expr.Inner with
+            | ExprInner.Int i -> ExprInner.Int(fnInt i)
+            | ExprInner.Float f -> ExprInner.Float(fnFloat f)
+            | _ -> constructor expr
+
+        { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
+
     let private checkNot (expr: Expr) =
         match expr.Type with
         | Type.Int
@@ -307,11 +322,24 @@ module Operators =
 
         { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
 
+    let private checkBitnot (expr: Expr) =
+        let ty =
+            match expr.Type with
+            | Type.Int -> Type.Int
+            | _ -> raise (CompilerException "")
+
+        let inner =
+            match expr.Inner with
+            | ExprInner.Int i -> ExprInner.Int ~~~i
+            | _ -> Nega expr
+
+        { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
+
     let prefixOperators =
         [ { Symbol = "!"; Precedence = 12; Map = checkNot }
           { Symbol = "+"; Precedence = 12; Map = id }
           { Symbol = "-"; Precedence = 12; Map = checkNega }
-          { Symbol = "~"; Precedence = 12; Map = id }
+          { Symbol = "~"; Precedence = 12; Map = checkBitnot }
           { Symbol = "++"; Precedence = 12; Map = id }
           { Symbol = "--"; Precedence = 12; Map = id } ]
 
@@ -347,7 +375,6 @@ let keyword str =
 
 let expr = operatorParser.ExpressionParser .>> ws <?> "an expression"
 let parenExpr = between (ch '(') (ch ')') expr
-
 let identifierStr = regex @"[a-zA-Z_][a-zA-Z0-9_]*" .>> ws
 
 let identifier =
@@ -355,18 +382,18 @@ let identifier =
     >>= fun (name, state) ->
         match searchDef state name with
         | Some(def, handler) ->
-            let inline makeConstInt (x: ^T) =
-                { Inner = ExprInner.Int(int x); Type = Type.Int; Category = RValue; IsConst = true }
+            let inline makeConstInt (x: 'T) =
+                { Inner = x |> int |> ExprInner.Int; Type = Type.Int; Category = RValue; IsConst = true }
 
-            let inline makeConstFloat (x: ^T) =
-                { Inner = ExprInner.Float(single x); Type = Type.Int; Category = RValue; IsConst = true }
+            let inline makeConstFloat (x: 'T) =
+                { Inner = x |> single |> ExprInner.Float; Type = Type.Float; Category = RValue; IsConst = true }
 
             preturn (
                 match def.Init, def.Type with
-                | Some(ConstInt i), Type.Int -> makeConstInt i
-                | Some(ConstInt i), Type.Float -> makeConstFloat i
-                | Some(ConstFloat f), Type.Int -> makeConstInt f
-                | Some(ConstFloat f), Type.Float -> makeConstFloat f
+                | Some(ConstInt x), Type.Int -> makeConstInt x
+                | Some(ConstInt x), Type.Float -> makeConstFloat x
+                | Some(ConstFloat x), Type.Int -> makeConstInt x
+                | Some(ConstFloat x), Type.Float -> makeConstFloat x
                 | _, ty when ty = Type.Int || ty = Type.Float ->
                     // .NET 9 起使用 `.IsInt` 和 `.IsFloat` 属性
                     { Inner = Var handler; Type = ty; Category = LValue; IsConst = false }
@@ -488,7 +515,7 @@ module Definitions =
         tuple3 nonVoidTypes (opt identifierStr) (opt (ch '[' >>. ch ']' >>. many (between (ch '[') (ch ']') constInt)))
         |>> fun (ty, idOpt, arrDims) ->
             match arrDims with
-            | Some dims -> Pointer(ty, List.map uint64 dims), idOpt
+            | Some dims -> Pointer(ty, dims |> List.map uint64), idOpt
             | None -> ty, idOpt
 
     let makeFuncDecl newRetType name (newParams: (Type * string option) list) state =
@@ -498,7 +525,7 @@ module Definitions =
             | Type.Function(retType, paramTypes) when
                 newRetType = retType
                 && newParams.Length = paramTypes.Length
-                && Seq.exists2 (=) (Seq.map fst newParams) paramTypes
+                && Seq.forall2 (=) (Seq.map fst newParams) paramTypes
                 ->
                 preturn None
             | _ -> fail $"Conflicting types for {name}"
@@ -508,7 +535,7 @@ module Definitions =
 
                 let def =
                     { Init = None
-                      Type = Type.Function(newRetType, List.map fst newParams)
+                      Type = Type.Function(newRetType, newParams |> List.map fst)
                       ID = name
                       IsGlobal = true
                       IsArg = false }
@@ -528,7 +555,7 @@ module Definitions =
                 let id = Option.defaultValue "" idOpt
                 { Init = None; Type = ty; ID = id; IsGlobal = false; IsArg = true })
 
-        let type_ = Type.Function(newRetType, List.map fst newParams)
+        let type_ = Type.Function(newRetType, newParams |> List.map fst)
 
         let makeDef body =
             { Init = Some(Function { Block = body; ArgHandlers = argHandlers })
@@ -548,27 +575,27 @@ module Definitions =
             )
             >>. blockNoRegion
             .>> updateUserState exitBlock
-            >>= fun body ->
+            >>= (fun body ->
                 updateUserState (fun state ->
                     state.SymbolTable.[handler] <- makeDef body
-                    state)
-                >>. preturn (Some handler)
+                    state))
+            >>. preturn (Some handler)
         | Some(def, handler) ->
             match def.Type with
             | Type.Function(retType, paramTypes) when
                 newRetType = retType
                 && newParams.Length = paramTypes.Length
-                && Seq.exists2 (=) (Seq.map fst newParams) paramTypes
-                && def.Init.IsSome
+                && Seq.forall2 (=) (Seq.map fst newParams) paramTypes
+                && def.Init.IsNone
                 ->
                 updateUserState (enterFuncBody newRetType >> insertDefs argHandlers argDefs)
                 >>. blockNoRegion
                 .>> updateUserState exitBlock
-                >>= fun body ->
+                >>= (fun body ->
                     updateUserState (fun state ->
                         state.SymbolTable.[handler] <- makeDef body
-                        state)
-                    >>. preturn (Some handler)
+                        state))
+                >>. preturn (Some handler)
             | _ -> fail $"Conflicting types for {name}."
 
     let funcDeclDef =
