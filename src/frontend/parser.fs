@@ -394,8 +394,7 @@ let identifier =
                 | Some(ConstInt x), Type.Float -> makeConstFloat x
                 | Some(ConstFloat x), Type.Int -> makeConstInt x
                 | Some(ConstFloat x), Type.Float -> makeConstFloat x
-                | _, ty when ty = Type.Int || ty = Type.Float ->
-                    // .NET 9 起使用 `.IsInt` 和 `.IsFloat` 属性
+                | _, ty when ty.IsInt || ty.IsFloat ->
                     { Inner = Var handler; Type = ty; Category = LValue; IsConst = false }
                 | _, ty -> { Inner = Var handler; Type = ty; Category = RValue; IsConst = false }
             )
