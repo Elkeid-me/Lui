@@ -20,10 +20,12 @@ let main args =
                     System.Text.Encoding.UTF8
 
             match result with
-            | Success(ast, state, _) -> printfn "Parse succeeded:\nAST:\n%A\nSymbol table:\n%A" ast state
-            | Failure(errMsg, _, _) -> printfn "Parse failed: %s" errMsg
+            | Success(ast, state, _) ->
+                let translationUnit = { Ast = ast; SymbolTable = state.SymbolTable }
+                printfn "Parse succeeded:\n%A" translationUnit
+            | Failure(errMsg, _, _) -> printfn "%s" errMsg
 
-        testParser Parser.Definitions.defs path
+        testParser Parser.translationUnit path
     | _ -> printfn "Please provide a file path."
 
     0

@@ -1,6 +1,7 @@
 module AST
 
 type Handler = uint
+type HashMap<'K, 'V> = System.Collections.Generic.Dictionary<'K, 'V>
 
 type Type =
     | Int
@@ -117,4 +118,4 @@ type Init =
 
 type Definition = { Init: Init option; Type: Type; ID: string; IsGlobal: bool; IsArg: bool }
 
-type TranslationUnit = { Ast: Handler list; SymbolTable: Map<Handler, Definition> }
+type TranslationUnit = { Ast: Handler list; SymbolTable: HashMap<Handler, Definition> }

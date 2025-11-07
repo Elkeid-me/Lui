@@ -375,7 +375,7 @@ let identifier =
                     { Inner = Var handler; Type = ty; Category = LValue; IsConst = false }
                 | _, ty -> { Inner = Var handler; Type = ty; Category = RValue; IsConst = false }
             )
-        | None -> fail $"Undefined identifier: {name}."
+        | None -> fail $"Undefined identifier: `{name}`."
 
 let funcCall =
     attempt (tuple3 identifierStr (between (ch '(') (ch ')') (sepBy expr (ch ','))) getUserState)
@@ -385,13 +385,13 @@ let funcCall =
             match def.Type with
             | Type.Function(retType, paramTypes) ->
                 if paramTypes.Length <> args.Length then
-                    fail $"Function {name} argument count mismatch."
+                    fail $"Function `{name}` argument count mismatch."
                 else if not (List.forall2 typeConvertible (args |> List.map _.Type) paramTypes) then
-                    fail $"Function {name} argument type mismatch."
+                    fail $"Function `{name}` argument type mismatch."
                 else
                     preturn { Inner = Func(handler, args); Type = retType; Category = RValue; IsConst = false }
-            | _ -> fail $"{name} is not a function."
-        | None -> fail $"Undefined function: {name}."
+            | _ -> fail $"`{name}` is not a function."
+        | None -> fail $"Undefined function: `{name}`."
 
 let block, blockRef = createParserForwardedToRef ()
 let statement, stmtRef = createParserForwardedToRef ()
@@ -438,18 +438,20 @@ let whileHelper =
     between (updateUserState (enterBlock true)) (updateUserState exitBlock) ifWhileHelper
 
 let arithExpr =
-    parenExpr
+    expr
     >>= fun expr ->
         match expr.Type with
         | Type.Int
         | Type.Float -> preturn expr
         | _ -> fail "Expecting an expression of type `int` or `float`."
 
+let condExpr = between (ch '(') (ch ')') arithExpr
+
 let ifElse =
-    tuple3 (keyword "if" >>. arithExpr) ifHelper (opt (keyword "else" >>. ifHelper) |>> Option.defaultValue [])
+    tuple3 (keyword "if" >>. condExpr) ifHelper (opt (keyword "else" >>. ifHelper) |>> Option.defaultValue [])
     |>> If
 
-let whileLoop = keyword "while" >>. arithExpr .>>. whileHelper |>> While
+let whileLoop = keyword "while" >>. condExpr .>>. whileHelper |>> While
 
 module Definitions =
     let private int_ = keyword "int" >>% Type.Int
@@ -488,7 +490,7 @@ module Definitions =
                 match def.Type with
                 | Type.Function(retType, paramTypes) when newRetType = retType && newParams |> List.map fst = paramTypes ->
                     preturn []
-                | _ -> fail $"Conflicting types for {name}"
+                | _ -> fail $"Conflicting types for `{name}`."
             | None ->
                 updateUserState (fun state ->
                     let handler = state.Counter()
@@ -557,7 +559,7 @@ module Definitions =
                         state.SymbolTable.[handler] <- makeDef body
                         state))
                 >>. preturn [ handler ]
-            | _ -> fail $"Conflicting types for {name}."
+            | _ -> fail $"Conflicting types for `{name}`."
 
     let private followedByCh c = followedBy (ch c)
 
@@ -589,20 +591,20 @@ module Definitions =
                     | _ -> exit 0
 
     let private varDefAfter =
-        opt (many1 (ch '[' >>. posiConstInt .>> ch ']')) .>> ch '='
+        opt (many1 (ch '[' >>. posiConstInt .>> ch ']'))
         >>= fun arrDims ->
             match arrDims with
             // TODO: 需要进一步处理初始化列表。
             | Some dims ->
-                opt initList
+                opt (ch '=' >>. initList)
                 |>> fun init -> Some(dims |> List.map uint64), init |> Option.map List
-            | None -> opt arithExpr |>> fun exprOpt -> None, Option.map Init.Expr exprOpt
+            | None -> opt (ch '=' >>. arithExpr) |>> fun exprOpt -> None, Option.map Expr exprOpt
 
     let private makeVarDef name arrDimOpt initOpt =
         getUserState
         >>= fun state ->
             if currentExist state name then
-                fail $"Redefinition of identifier: {name}."
+                fail $"Redefinition of identifier: `{name}`."
             else
                 let ty = state.ParsingType
 
@@ -661,12 +663,7 @@ module Definitions =
                             varDefAfter >>= wrap1 name
                             .>>. opt (many (ch ',' >>. identifierStr .>>. varDefAfter >>= wrap2))
 
-                    tmp .>> ch ';'
-                    |>> fun (x, l) ->
-                        match l with
-                        | Some l -> x :: l
-                        | None -> [ x ]
-
+                    tmp .>> ch ';' |>> fun (x, l) -> x :: Option.defaultValue [] l
 
                 updateUserState (fun state -> { state with ParsingType = type_ }) >>. parse
 
@@ -684,3 +681,5 @@ do
         let exprStmt = expr .>> ch ';' |>> Statement.Expr
         let emptyStmt = ch ';' >>% Empty
         choice [ whileLoop; ifElse; continue_; break_; return_; exprStmt; emptyStmt ]
+
+let translationUnit = many Definitions.defs |>> List.concat
