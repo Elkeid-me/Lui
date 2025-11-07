@@ -15,13 +15,23 @@ let createCounter () =
 type HashMap<'K, 'V> = System.Collections.Generic.Dictionary<'K, 'V>
 type BlockInfo = { SymbolTable: HashMap<string, Handler>; InLoop: bool }
 
+/// <summary>
+/// - `Counter`: 生成唯一标识符的计数器。
+/// - `SymbolTable`: 全局的符号表，存储 `Handler` 到 `Definition` 的映射。
+/// - `RetType`: 当前函数的返回类型。
+/// - `Blocks`: 当前作用域栈，每个作用域包含一个符号表和是否在循环内的信息。
+/// - `ParsingType`: 当前正在解析的基础类型（用于处理类型声明）。
+///
+///   注意，解析数组声明时，仍然使用数组元素类型作为 `ParsingType`。
+/// </summary>
 type Context =
     { Counter: unit -> uint
       SymbolTable: HashMap<Handler, Definition>
       RetType: Type
-      Blocks: BlockInfo list }
+      Blocks: BlockInfo list
+      ParsingType: Type }
 
-let isInLoop state = (List.head state.Blocks).InLoop
+let isInLoop state = state.Blocks.Head.InLoop
 
 let isGlobal state =
     match state.Blocks with
@@ -38,7 +48,7 @@ let enterFuncBody retType state =
         Blocks = { SymbolTable = HashMap(); InLoop = false } :: state.Blocks }
 
 let exitBlock state =
-    { state with Blocks = List.tail state.Blocks }
+    { state with Blocks = state.Blocks.Tail }
 
 let insertDef handler def state =
     state.SymbolTable.Add(handler, def)
@@ -57,6 +67,9 @@ let searchDef context identifier =
     |> List.tryFind _.SymbolTable.ContainsKey(identifier)
     |> Option.map _.SymbolTable.[identifier]
     |> Option.map (fun h -> context.SymbolTable.[h], h)
+
+let currentExist context identifier =
+    context.Blocks.Head.SymbolTable.ContainsKey identifier
 
 let boolIntFun f a b = if f a b then 1 else 0
 
@@ -80,9 +93,7 @@ let arithOpCheck fnInt fnFloat constructor (l: Expr) (r: Expr) =
     { Inner = inner; Type = ty; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
 let intOpCheck fnInt constructor (l: Expr) (r: Expr) =
-    match l.Type, r.Type with
-    | Type.Int, Type.Int -> ()
-    | _ -> raise (CompilerException "Invalid type of operands.")
+    if not (l.Type.IsInt && r.Type.IsInt) then raise (CompilerException "Invalid type of operands.")
 
     let inner =
         match l.Inner, r.Inner with
@@ -92,12 +103,8 @@ let intOpCheck fnInt constructor (l: Expr) (r: Expr) =
     { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
 let logicOpCheck fnLogic constructor (l: Expr) (r: Expr) =
-    match l.Type, r.Type with
-    | Type.Int, Type.Int
-    | Type.Float, Type.Int
-    | Type.Int, Type.Float
-    | Type.Float, Type.Float -> ()
-    | _ -> raise (CompilerException "Invalid type of operands.")
+    if not ((l.Type.IsInt || l.Type.IsFloat) && (r.Type.IsInt || r.Type.IsFloat)) then
+        raise (CompilerException "Invalid type of operands.")
 
     let inner =
         match l.Inner, r.Inner with
@@ -110,12 +117,8 @@ let logicOpCheck fnLogic constructor (l: Expr) (r: Expr) =
     { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
 let relOpCheck fnIntComp fnFloatComp constructor (l: Expr) (r: Expr) =
-    match l.Type, r.Type with
-    | Type.Int, Type.Int
-    | Type.Float, Type.Int
-    | Type.Int, Type.Float
-    | Type.Float, Type.Float -> ()
-    | _ -> raise (CompilerException "Invalid type of operands.")
+    if not ((l.Type.IsInt || l.Type.IsFloat) && (r.Type.IsInt || r.Type.IsFloat)) then
+        raise (CompilerException "Invalid type of operands.")
 
     let inner =
         match l.Inner, r.Inner with
@@ -127,34 +130,21 @@ let relOpCheck fnIntComp fnFloatComp constructor (l: Expr) (r: Expr) =
 
     { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
-let assignOpCheck con (l: Expr) (r: Expr) =
+let assignOpCheck constructor (l: Expr) (r: Expr) =
     if l.Category <> LValue then
-        raise (CompilerException "R-value on the left hand side if assign operator.")
+        raise (CompilerException "R-value on the left hand side of assign operator.")
 
-    let ty =
-        match l.Type, r.Type with
-        | Type.Int, Type.Int
-        | Type.Int, Type.Float -> Type.Int
-        | Type.Float, Type.Int
-        | Type.Float, Type.Float -> Type.Float
-        | _ -> raise (CompilerException "Invalid type of operands.")
+    if not ((l.Type.IsInt || l.Type.IsFloat) && (r.Type.IsInt || r.Type.IsFloat)) then
+        raise (CompilerException "Invalid type of operands.")
 
-    let inner = con (l, r)
+    { Inner = constructor (l, r); Type = l.Type; Category = LValue; IsConst = false }
 
-    { Inner = inner; Type = ty; Category = LValue; IsConst = false }
-
-let intAssignOpCheck con (l: Expr) (r: Expr) =
+let intAssignOpCheck constructor (l: Expr) (r: Expr) =
     if l.Category <> LValue then
-        raise (CompilerException "R-value on the left hand side if assign operator.")
+        raise (CompilerException "R-value on the left hand side of assign operator.")
 
-    let ty =
-        match l.Type, r.Type with
-        | Type.Int, Type.Int -> Type.Int
-        | _ -> raise (CompilerException "Invalid type of operands.")
-
-    let inner = con (l, r)
-
-    { Inner = inner; Type = ty; Category = LValue; IsConst = false }
+    if not (l.Type.IsInt && r.Type.IsInt) then raise (CompilerException "Invalid type of operands.")
+    { Inner = constructor (l, r); Type = Type.Int; Category = LValue; IsConst = false }
 
 let cxxComment = skipString "//" .>> manyCharsTill anyChar (skipNewline <|> eof)
 let blockComment = skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
@@ -164,31 +154,29 @@ let ws = skipMany singleSpace
 let str s = pstring s .>> ws
 let ch c = pchar c .>> ws
 
+let inline makeConstInt (x: 'T) =
+    { Inner = x |> int |> ExprInner.Int; Type = Type.Int; Category = RValue; IsConst = true }
+
+let inline makeConstFloat (x: 'T) =
+    { Inner = x |> single |> ExprInner.Float; Type = Type.Float; Category = RValue; IsConst = true }
+
 let literal =
-    let makeFloat x =
-        { Inner = x |> single |> ExprInner.Float; Type = Type.Float; Category = RValue; IsConst = true }
-
-    let makeInt x =
-        { Inner = ExprInner.Int x; Type = Type.Int; Category = RValue; IsConst = true }
-
     let cvtInt (base_: int) int_ = System.Convert.ToInt32(int_, base_)
-    let subStr idx (str: string) = str.Substring idx
+    let hexInt = regex @"0[xX][0-9a-fA-F]+" |>> (cvtInt 16 >> makeConstInt)
+    let binInt = regex @"0[bB][01]+" |>> (cvtInt 2 >> makeConstInt)
+    let octInt = regex @"0[0-7]*" |>> (cvtInt 8 >> makeConstInt)
+    let decInt = regex @"[1-9]\d*" |>> (cvtInt 10 >> makeConstInt)
 
-    let pHexInt = regex @"0[xX][0-9a-fA-F]+" |>> (subStr 2 >> cvtInt 16 >> makeInt)
-    let pBinInt = regex @"0[bB][01]+" |>> (subStr 2 >> cvtInt 2 >> makeInt)
-    let pOctInt = regex @"0[0-7]*" |>> (cvtInt 8 >> makeInt)
-    let pDecInt = regex @"[1-9]\d*" |>> (int >> makeInt)
-
-    let pDecFloat =
+    let decFloat =
         regex @"(((\d*\.\d+)|(\d+\.))([eE][-+]?\d+)?)|((\d+)([eE][-+]?\d+))"
-        |>> (single >> makeFloat)
+        |>> (single >> makeConstFloat)
 
-    let pHexFloat =
+    let hexFloat =
         regex @"0[xX](([0-9a-fA-F]*\.[0-9a-fA-F]+)|([0-9a-fA-F]+\.))|([0-9a-fA-F]+)[pP][+-]\d+"
-        |>> (HexFloat.SingleFromHexString >> makeFloat)
+        |>> (HexFloat.SingleFromHexString >> makeConstFloat)
 
-    let pInt = choiceL [ pHexInt; pBinInt; pOctInt; pDecInt ] "integer literal"
-    let pFloat = pHexFloat <|> pDecFloat <?> "floating-point literal"
+    let pInt = choiceL [ hexInt; binInt; octInt; decInt ] "integer literal"
+    let pFloat = choiceL [ hexFloat; decFloat ] "floating-point literal"
 
     pFloat <|> pInt .>> ws
 
@@ -239,7 +227,7 @@ module Operators =
             Assoc = Associativity.Left
             Map = relOpCheck (boolIntFun (=)) (boolIntFun (=)) Eq }
           { Symbol = "!="
-            Precedence = 6
+            Precedence = 7
             Assoc = Associativity.Left
             Map = relOpCheck (boolIntFun (<>)) (boolIntFun (<>)) Neq }
 
@@ -294,10 +282,8 @@ module Operators =
         { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
 
     let private checkNot (expr: Expr) =
-        match expr.Type with
-        | Type.Int
-        | Type.Float -> ()
-        | _ -> raise (CompilerException "")
+        if not (expr.Type.IsInt || expr.Type.IsFloat) then
+            raise (CompilerException "Invalid type of operand.")
 
         let inner =
             match expr.Inner with
@@ -312,7 +298,7 @@ module Operators =
             match expr.Type with
             | Type.Int -> Type.Int
             | Type.Float -> Type.Float
-            | _ -> raise (CompilerException "")
+            | _ -> raise (CompilerException "Invalid type of operand.")
 
         let inner =
             match expr.Inner with
@@ -323,17 +309,14 @@ module Operators =
         { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
 
     let private checkBitnot (expr: Expr) =
-        let ty =
-            match expr.Type with
-            | Type.Int -> Type.Int
-            | _ -> raise (CompilerException "")
+        if not expr.Type.IsInt then raise (CompilerException "Invalid type of operand.")
 
         let inner =
             match expr.Inner with
             | ExprInner.Int i -> ExprInner.Int ~~~i
             | _ -> Nega expr
 
-        { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
+        { Inner = inner; Type = Type.Int; Category = RValue; IsConst = expr.IsConst }
 
     let prefixOperators =
         [ { Symbol = "!"; Precedence = 12; Map = checkNot }
@@ -382,12 +365,6 @@ let identifier =
     >>= fun (name, state) ->
         match searchDef state name with
         | Some(def, handler) ->
-            let inline makeConstInt (x: 'T) =
-                { Inner = x |> int |> ExprInner.Int; Type = Type.Int; Category = RValue; IsConst = true }
-
-            let inline makeConstFloat (x: 'T) =
-                { Inner = x |> single |> ExprInner.Float; Type = Type.Float; Category = RValue; IsConst = true }
-
             preturn (
                 match def.Init, def.Type with
                 | Some(ConstInt x), Type.Int -> makeConstInt x
@@ -415,20 +392,6 @@ let funcCall =
                     preturn { Inner = Func(handler, args); Type = retType; Category = RValue; IsConst = false }
             | _ -> fail $"{name} is not a function."
         | None -> fail $"Undefined function: {name}."
-
-// let arrayElem =
-//     let checkPointer (indices: Expr) handler baseType lens =
-//         if not (List.forall _.Type.IsInt indices) then
-//             fail "Array indices must be of type `int`."
-//         else
-
-
-//     attempt (identifierBase .>>. many (between (ch '[') (ch ']') expr))
-//     >>= fun ((name, def, handler), indices) ->
-//         match def.Type with
-//         | Array(elemType, dimensions) -> 1
-//         | Pointer(elemType, dimensions) -> 1
-
 
 let block, blockRef = createParserForwardedToRef ()
 let statement, stmtRef = createParserForwardedToRef ()
@@ -462,8 +425,7 @@ let return_ =
         | Void -> ch ';' >>% Return None
         | _ -> expr .>> ch ';' >>= checkExpr state |>> Return
 
-let blockItem = choice [ block |>> Block; statement |>> Statement ]
-
+let blockItem, blockItemRef = createParserForwardedToRef ()
 let blockNoRegion = between (ch '{') (ch '}') (many blockItem)
 
 let ifWhileHelper =
@@ -475,7 +437,7 @@ let ifHelper =
 let whileHelper =
     between (updateUserState (enterBlock true)) (updateUserState exitBlock) ifWhileHelper
 
-let condExpr =
+let arithExpr =
     parenExpr
     >>= fun expr ->
         match expr.Type with
@@ -484,24 +446,23 @@ let condExpr =
         | _ -> fail "Expecting an expression of type `int` or `float`."
 
 let ifElse =
-    tuple3 (keyword "if" >>. condExpr) ifHelper (opt (keyword "else" >>. ifHelper) |>> Option.defaultValue [])
+    tuple3 (keyword "if" >>. arithExpr) ifHelper (opt (keyword "else" >>. ifHelper) |>> Option.defaultValue [])
     |>> If
 
-let whileLoop = keyword "while" >>. condExpr .>>. whileHelper |>> While
+let whileLoop = keyword "while" >>. arithExpr .>>. whileHelper |>> While
 
 module Definitions =
     let private int_ = keyword "int" >>% Type.Int
     let private float_ = keyword "float" >>% Type.Float
     let private void_ = keyword "void" >>% Void
-    let private types = choice [ int_; float_; void_ ]
-    let private nonVoidTypes = int_ <|> float_
+    let private types = choiceL [ int_; float_; void_ ] "a type"
+    let private nonVoidTypes = choiceL [ int_; float_ ] "a non-void type"
 
-    let private constInt =
+    let private posiConstInt =
         expr
-        >>= fun e ->
-            match e.Inner, e.Type with
-            | ExprInner.Int i, Type.Int -> preturn i
-            | _ -> fail "Expecting an integer constant."
+        >>= function
+            | { Inner = ExprInner.Int i } when i > 0 -> preturn i
+            | _ -> fail "Expecting a positive integer constant."
 
     let private constExpr =
         expr
@@ -511,40 +472,42 @@ module Definitions =
             | false -> fail "Expecting a constant expression."
 
     let private param =
-        tuple3 nonVoidTypes (opt identifierStr) (opt (ch '[' >>. ch ']' >>. many (between (ch '[') (ch ']') constInt)))
+        tuple3
+            nonVoidTypes
+            (opt identifierStr)
+            (opt (ch '[' >>. ch ']' >>. many (between (ch '[') (ch ']') posiConstInt)))
         |>> fun (ty, idOpt, arrDims) ->
             match arrDims with
             | Some dims -> Pointer(ty, dims |> List.map uint64), idOpt
             | None -> ty, idOpt
 
-    let makeFuncDecl newRetType name (newParams: (Type * string option) list) state =
-        match searchDef state name with
-        | Some(def, _) ->
-            match def.Type with
-            | Type.Function(retType, paramTypes) when
-                newRetType = retType
-                && newParams.Length = paramTypes.Length
-                && Seq.forall2 (=) (Seq.map fst newParams) paramTypes
-                ->
-                preturn None
-            | _ -> fail $"Conflicting types for {name}"
-        | None ->
-            updateUserState (fun state ->
-                let handler = state.Counter()
+    let private makeFuncDecl newRetType name (newParams: (Type * string option) list) state =
+        let parseInitial =
+            match searchDef state name with
+            | Some(def, _) ->
+                match def.Type with
+                | Type.Function(retType, paramTypes) when newRetType = retType && newParams |> List.map fst = paramTypes ->
+                    preturn []
+                | _ -> fail $"Conflicting types for {name}"
+            | None ->
+                updateUserState (fun state ->
+                    let handler = state.Counter()
 
-                let def =
-                    { Init = None
-                      Type = Type.Function(newRetType, newParams |> List.map fst)
-                      ID = name
-                      IsGlobal = true
-                      IsArg = false }
+                    let def =
+                        { Init = None
+                          Type = Type.Function(newRetType, newParams |> List.map fst)
+                          ID = name
+                          IsGlobal = true
+                          IsArg = false }
 
-                state.SymbolTable.Add(handler, def)
-                state.Blocks.Head.SymbolTable.Add(name, handler)
-                state)
-            >>. preturn None
+                    state.SymbolTable.Add(handler, def)
+                    state.Blocks.Head.SymbolTable.Add(name, handler)
+                    state)
+                >>. preturn []
 
-    let makeFuncDef newRetType name (newParams: (Type * string option) list) state =
+        parseInitial .>> ch ';'
+
+    let private makeFuncDef newRetType name (newParams: (Type * string option) list) state =
         let argHandlers =
             { 1 .. newParams.Length } |> Seq.map (fun _ -> state.Counter()) |> Seq.toList
 
@@ -578,13 +541,12 @@ module Definitions =
                 updateUserState (fun state ->
                     state.SymbolTable.[handler] <- makeDef body
                     state))
-            >>. preturn (Some handler)
+            >>. preturn [ handler ]
         | Some(def, handler) ->
             match def.Type with
             | Type.Function(retType, paramTypes) when
                 newRetType = retType
-                && newParams.Length = paramTypes.Length
-                && Seq.forall2 (=) (Seq.map fst newParams) paramTypes
+                && newParams |> List.map fst = paramTypes
                 && def.Init.IsNone
                 ->
                 updateUserState (enterFuncBody newRetType >> insertDefs argHandlers argDefs)
@@ -594,23 +556,127 @@ module Definitions =
                     updateUserState (fun state ->
                         state.SymbolTable.[handler] <- makeDef body
                         state))
-                >>. preturn (Some handler)
+                >>. preturn [ handler ]
             | _ -> fail $"Conflicting types for {name}."
 
-    let funcDeclDef =
-        tuple5
-            types
-            identifierStr
-            (between (ch '(') (ch ')') (sepBy param (ch ',')))
-            (choice [ followedBy (ch ';') >>% true; followedBy (ch '{') >>% false ])
-            getUserState
-        >>= fun (newRetType, name, newParams, isDecl, state) ->
-            if isDecl then
-                makeFuncDecl newRetType name newParams state
+    let private followedByCh c = followedBy (ch c)
+
+    let private constArithExpr =
+        constExpr
+        >>= function
+            | { Inner = ExprInner.Int i } -> preturn (Int i)
+            | { Inner = ExprInner.Float f } -> preturn (Float f)
+            | _ -> fail "Expecting a constant integer or floating-point expression."
+
+    let private initListItem, initListItemRef = createParserForwardedToRef ()
+    let private initList = between (ch '{') (ch '}') (sepBy initListItem (ch ','))
+    let private constInitListItem, constInitListItemRef = createParserForwardedToRef ()
+
+    let private constInitList =
+        between (ch '{') (ch '}') (sepBy constInitListItem (ch ','))
+
+    let private constDefAfter =
+        opt (many1 (ch '[' >>. posiConstInt .>> ch ']')) .>> ch '='
+        >>= fun arrDims ->
+            match arrDims with
+            // TODO: 需要进一步处理初始化列表。
+            | Some dims -> constInitList |>> fun init -> Some(dims |> List.map uint64), ConstList init
+            | None ->
+                constArithExpr
+                |>> function
+                    | Int i -> None, ConstInt i
+                    | Float f -> None, ConstFloat f
+                    | _ -> exit 0
+
+    let private varDefAfter =
+        opt (many1 (ch '[' >>. posiConstInt .>> ch ']')) .>> ch '='
+        >>= fun arrDims ->
+            match arrDims with
+            // TODO: 需要进一步处理初始化列表。
+            | Some dims ->
+                opt initList
+                |>> fun init -> Some(dims |> List.map uint64), init |> Option.map List
+            | None -> opt arithExpr |>> fun exprOpt -> None, Option.map Init.Expr exprOpt
+
+    let private makeVarDef name arrDimOpt initOpt =
+        getUserState
+        >>= fun state ->
+            if currentExist state name then
+                fail $"Redefinition of identifier: {name}."
             else
-                makeFuncDef newRetType name newParams state
+                let ty = state.ParsingType
+
+                let fullType =
+                    match arrDimOpt with
+                    | Some dims -> Array(ty, dims |> List.map uint64)
+                    | None -> ty
+
+                let handler = state.Counter()
+
+                let def =
+                    { Init = initOpt; Type = fullType; ID = name; IsGlobal = isGlobal state; IsArg = false }
+
+                updateUserState (insertDef handler def) >>. preturn handler
+
+    let defs =
+        tuple5
+            (opt (keyword "const" >>% ()))
+            types
+            (opt (keyword "const" >>% ()))
+            identifierStr
+            (choice
+                [ followedByCh '(' >>% true
+                  choice [ followedByCh '['; followedByCh ','; followedByCh '='; followedByCh ';' ]
+                  >>% false ])
+        >>= fun (const1, type_, const2, name, isFunc) ->
+            let const_ = const1.IsSome || const2.IsSome
+
+            if isFunc && not const_ then
+                tuple3
+                    (between (ch '(') (ch ')') (sepBy param (ch ',')))
+                    (choice [ followedByCh ';' >>% true; followedByCh '{' >>% false ])
+                    getUserState
+                >>= fun (params_, isDecl, state) ->
+                    if isDecl then
+                        makeFuncDecl type_ name params_ state
+                    else if isGlobal state then
+                        makeFuncDef type_ name params_ state
+                    else
+                        fail "Function definitions are only allowed in global scope."
+            else if type_.IsVoid then
+                fail "Variables cannot be of type void."
+            else
+                let parse =
+                    let tmp =
+                        if const_ then
+                            let wrap1 name (arrDimOpt, init) = makeVarDef name arrDimOpt (Some init)
+                            let wrap2 (name, (arrDimOpt, init)) = makeVarDef name arrDimOpt (Some init)
+
+                            constDefAfter >>= wrap1 name
+                            .>>. opt (many (ch ',' >>. identifierStr .>>. constDefAfter >>= wrap2))
+                        else
+                            let wrap1 name (arrDimOpt, init) = makeVarDef name arrDimOpt init
+                            let wrap2 (name, (arrDimOpt, init)) = makeVarDef name arrDimOpt init
+
+                            varDefAfter >>= wrap1 name
+                            .>>. opt (many (ch ',' >>. identifierStr .>>. varDefAfter >>= wrap2))
+
+                    tmp .>> ch ';'
+                    |>> fun (x, l) ->
+                        match l with
+                        | Some l -> x :: l
+                        | None -> [ x ]
+
+
+                updateUserState (fun state -> { state with ParsingType = type_ }) >>. parse
+
+    do
+        initListItemRef.Value <- choice [ initList |>> InitList; arithExpr |>> InitListItem.Expr ]
+        constInitListItemRef.Value <- choice [ constInitList |>> ConstInitList; constArithExpr ]
 
 do
+    blockItemRef.Value <- choice [ block |>> Block; Definitions.defs |>> Def; statement |>> Statement ]
+
     blockRef.Value <-
         between (ch '{' >>. updateUserState (enterBlock false)) (ch '}' >>. updateUserState exitBlock) (many blockItem)
 

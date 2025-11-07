@@ -14,6 +14,7 @@ let main args =
                     { Counter = Parser.createCounter ()
                       SymbolTable = HashMap()
                       RetType = Void
+                      ParsingType = Type.Int
                       Blocks = [ { SymbolTable = HashMap(); InLoop = false } ] }
                     input
                     System.Text.Encoding.UTF8
@@ -22,7 +23,7 @@ let main args =
             | Success(ast, state, _) -> printfn "Parse succeeded:\nAST:\n%A\nSymbol table:\n%A" ast state
             | Failure(errMsg, _, _) -> printfn "Parse failed: %s" errMsg
 
-        testParser Parser.Definitions.funcDeclDef path
+        testParser Parser.Definitions.defs path
     | _ -> printfn "Please provide a file path."
 
     0
