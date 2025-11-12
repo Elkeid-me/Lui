@@ -2,11 +2,12 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <TargetFramework>net9.0</TargetFramework>
+    <TargetFramework>net10.0</TargetFramework>
     <PublishTrimmed>true</PublishTrimmed>
     <PublishSingleFile>true</PublishSingleFile>
     <PublishAot>true</PublishAot>
-  </PropertyGroup>
+    <ParallelCompilation>true</ParallelCompilation>
+</PropertyGroup>
 
   <ItemGroup>
     <Compile Include="src\frontend\ast.fs" />

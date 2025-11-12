@@ -511,7 +511,7 @@ module Definitions =
 
     let private makeFuncDef newRetType name (newParams: (Type * string option) list) state =
         let argHandlers =
-            { 1 .. newParams.Length } |> Seq.map (fun _ -> state.Counter()) |> Seq.toList
+            seq { 1 .. newParams.Length } |> Seq.map (fun _ -> state.Counter()) |> Seq.toList
 
         let argDefs =
             newParams
