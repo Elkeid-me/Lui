@@ -3,7 +3,8 @@ module Parser
 open AST
 open FParsec
 
-exception CompilerException of string
+let unreachable () = failwith "Unreachable code."
+let todo () = failwith "Not implemented yet."
 
 let createCounter () =
     let count = 0 |> uint |> ref
@@ -15,7 +16,6 @@ let createCounter () =
 type HashMap<'K, 'V> = System.Collections.Generic.Dictionary<'K, 'V>
 type BlockInfo = { SymbolTable: HashMap<string, Handler>; InLoop: bool }
 
-/// <summary>
 /// - `Counter`: 生成唯一标识符的计数器。
 /// - `SymbolTable`: 全局的符号表，存储 `Handler` 到 `Definition` 的映射。
 /// - `RetType`: 当前函数的返回类型。
@@ -23,7 +23,6 @@ type BlockInfo = { SymbolTable: HashMap<string, Handler>; InLoop: bool }
 /// - `ParsingType`: 当前正在解析的基础类型（用于处理类型声明）。
 ///
 ///   注意，解析数组声明时，仍然使用数组元素类型作为 `ParsingType`。
-/// </summary>
 type Context =
     { Counter: unit -> uint
       SymbolTable: HashMap<Handler, Definition>
@@ -80,7 +79,7 @@ let arithOpCheck fnInt fnFloat constructor (l: Expr) (r: Expr) =
         | Type.Int, Type.Float
         | Type.Float, Type.Int
         | Type.Float, Type.Float -> Type.Float
-        | _ -> raise (CompilerException "Invalid type of operands.")
+        | _ -> failwith "Invalid type of operands."
 
     let inner =
         match l.Inner, r.Inner with
@@ -93,7 +92,7 @@ let arithOpCheck fnInt fnFloat constructor (l: Expr) (r: Expr) =
     { Inner = inner; Type = ty; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
 let intOpCheck fnInt constructor (l: Expr) (r: Expr) =
-    if not (l.Type.IsInt && r.Type.IsInt) then raise (CompilerException "Invalid type of operands.")
+    if not (l.Type.IsInt && r.Type.IsInt) then failwith "Invalid type of operands."
 
     let inner =
         match l.Inner, r.Inner with
@@ -104,7 +103,7 @@ let intOpCheck fnInt constructor (l: Expr) (r: Expr) =
 
 let logicOpCheck fnLogic constructor (l: Expr) (r: Expr) =
     if not ((l.Type.IsInt || l.Type.IsFloat) && (r.Type.IsInt || r.Type.IsFloat)) then
-        raise (CompilerException "Invalid type of operands.")
+        failwith "Invalid type of operands."
 
     let inner =
         match l.Inner, r.Inner with
@@ -118,7 +117,7 @@ let logicOpCheck fnLogic constructor (l: Expr) (r: Expr) =
 
 let relOpCheck fnIntComp fnFloatComp constructor (l: Expr) (r: Expr) =
     if not ((l.Type.IsInt || l.Type.IsFloat) && (r.Type.IsInt || r.Type.IsFloat)) then
-        raise (CompilerException "Invalid type of operands.")
+        failwith "Invalid type of operands."
 
     let inner =
         match l.Inner, r.Inner with
@@ -131,19 +130,17 @@ let relOpCheck fnIntComp fnFloatComp constructor (l: Expr) (r: Expr) =
     { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
 let assignOpCheck constructor (l: Expr) (r: Expr) =
-    if l.Category <> LValue then
-        raise (CompilerException "R-value on the left hand side of assign operator.")
+    if l.Category <> LValue then failwith "R-value on the left hand side of assign operator."
 
     if not ((l.Type.IsInt || l.Type.IsFloat) && (r.Type.IsInt || r.Type.IsFloat)) then
-        raise (CompilerException "Invalid type of operands.")
+        failwith "Invalid type of operands."
 
     { Inner = constructor (l, r); Type = l.Type; Category = LValue; IsConst = false }
 
 let intAssignOpCheck constructor (l: Expr) (r: Expr) =
-    if l.Category <> LValue then
-        raise (CompilerException "R-value on the left hand side of assign operator.")
+    if l.Category <> LValue then failwith "R-value on the left hand side of assign operator."
 
-    if not (l.Type.IsInt && r.Type.IsInt) then raise (CompilerException "Invalid type of operands.")
+    if not (l.Type.IsInt && r.Type.IsInt) then failwith "Invalid type of operands."
     { Inner = constructor (l, r); Type = Type.Int; Category = LValue; IsConst = false }
 
 let cxxComment = skipString "//" .>> manyCharsTill anyChar (skipNewline <|> eof)
@@ -271,7 +268,7 @@ module Operators =
             match expr.Type with
             | Type.Int -> Type.Int
             | Type.Float -> Type.Float
-            | _ -> raise (CompilerException "Invalid type of operand.")
+            | _ -> failwith "Invalid type of operand."
 
         let inner =
             match expr.Inner with
@@ -282,8 +279,7 @@ module Operators =
         { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
 
     let private checkNot (expr: Expr) =
-        if not (expr.Type.IsInt || expr.Type.IsFloat) then
-            raise (CompilerException "Invalid type of operand.")
+        if not (expr.Type.IsInt || expr.Type.IsFloat) then failwith "Invalid type of operand."
 
         let inner =
             match expr.Inner with
@@ -298,7 +294,7 @@ module Operators =
             match expr.Type with
             | Type.Int -> Type.Int
             | Type.Float -> Type.Float
-            | _ -> raise (CompilerException "Invalid type of operand.")
+            | _ -> failwith "Invalid type of operand."
 
         let inner =
             match expr.Inner with
@@ -309,7 +305,7 @@ module Operators =
         { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
 
     let private checkBitnot (expr: Expr) =
-        if not expr.Type.IsInt then raise (CompilerException "Invalid type of operand.")
+        if not expr.Type.IsInt then failwith "Invalid type of operand."
 
         let inner =
             match expr.Inner with
@@ -492,26 +488,21 @@ module Definitions =
                     preturn []
                 | _ -> fail $"Conflicting types for `{name}`."
             | None ->
-                updateUserState (fun state ->
-                    let handler = state.Counter()
+                let handler = state.Counter()
 
-                    let def =
-                        { Init = None
-                          Type = Type.Function(newRetType, newParams |> List.map fst)
-                          ID = name
-                          IsGlobal = true
-                          IsArg = false }
+                let def =
+                    { Init = None
+                      Type = Type.Function(newRetType, newParams |> List.map fst)
+                      ID = name
+                      IsGlobal = true
+                      IsArg = false }
 
-                    state.SymbolTable.Add(handler, def)
-                    state.Blocks.Head.SymbolTable.Add(name, handler)
-                    state)
-                >>. preturn []
+                updateUserState (insertDef handler def) >>. preturn []
 
         parseInitial .>> ch ';'
 
     let private makeFuncDef newRetType name (newParams: (Type * string option) list) state =
-        let argHandlers =
-            seq { 1 .. newParams.Length } |> Seq.map (fun _ -> state.Counter()) |> Seq.toList
+        let argHandlers = List.init newParams.Length (fun _ -> state.Counter())
 
         let argDefs =
             newParams
@@ -588,7 +579,7 @@ module Definitions =
                 |>> function
                     | Int i -> None, ConstInt i
                     | Float f -> None, ConstFloat f
-                    | _ -> exit 0
+                    | _ -> unreachable ()
 
     let private varDefAfter =
         opt (many1 (ch '[' >>. posiConstInt .>> ch ']'))
