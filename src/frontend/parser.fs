@@ -1,3 +1,20 @@
+// Copyright (C) 2025 Elkeid Me
+//
+// This file is part of Lui.
+//
+// Lui is free software: you can redistribute it and/or modify
+// it under the terms of the GNU General Public License as published by
+// the Free Software Foundation, either version 3 of the License, or
+// (at your option) any later version.
+//
+// Lui is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU General Public License for more details.
+//
+// You should have received a copy of the GNU General Public License
+// along with Lui.  If not, see <http://www.gnu.org/licenses/>.
+
 module Parser
 
 open AST
@@ -658,19 +675,18 @@ module Definitions =
 
                 updateUserState (fun state -> { state with ParsingType = type_ }) >>. parse
 
-    do
-        initListItemRef.Value <- choice [ initList |>> InitList; arithExpr |>> InitListItem.Expr ]
-        constInitListItemRef.Value <- choice [ constInitList |>> ConstInitList; constArithExpr ]
+    initListItemRef.Value <- choice [ initList |>> InitList; arithExpr |>> InitListItem.Expr ]
+    constInitListItemRef.Value <- choice [ constInitList |>> ConstInitList; constArithExpr ]
 
-do
-    blockItemRef.Value <- choice [ block |>> Block; Definitions.defs |>> Def; statement |>> Statement ]
 
-    blockRef.Value <-
-        between (ch '{' >>. updateUserState (enterBlock false)) (ch '}' >>. updateUserState exitBlock) (many blockItem)
+blockItemRef.Value <- choice [ block |>> Block; Definitions.defs |>> Def; statement |>> Statement ]
 
-    stmtRef.Value <-
-        let exprStmt = expr .>> ch ';' |>> Statement.Expr
-        let emptyStmt = ch ';' >>% Empty
-        choice [ whileLoop; ifElse; continue_; break_; return_; exprStmt; emptyStmt ]
+blockRef.Value <-
+    between (ch '{' >>. updateUserState (enterBlock false)) (ch '}' >>. updateUserState exitBlock) (many blockItem)
+
+stmtRef.Value <-
+    let exprStmt = expr .>> ch ';' |>> Statement.Expr
+    let emptyStmt = ch ';' >>% Empty
+    choice [ whileLoop; ifElse; continue_; break_; return_; exprStmt; emptyStmt ]
 
 let translationUnit = many Definitions.defs |>> List.concat
