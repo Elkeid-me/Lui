@@ -47,7 +47,7 @@ type Context =
       Blocks: BlockInfo list
       ParsingType: Type }
 
-let isInLoop state = state.Blocks.Head.InLoop
+let isInLoop state = (List.head state.Blocks).InLoop
 
 let isGlobal state =
     match state.Blocks with
@@ -64,7 +64,7 @@ let enterFuncBody retType state =
         Blocks = { SymbolTable = HashMap(); InLoop = false } :: state.Blocks }
 
 let exitBlock state =
-    { state with Blocks = state.Blocks.Tail }
+    { state with Blocks = List.tail state.Blocks }
 
 let insertDef handler def state =
     state.SymbolTable.Add(handler, def)
@@ -372,44 +372,119 @@ let keyword str =
 let expr = operatorParser.ExpressionParser .>> ws <?> "an expression"
 let parenExpr = between (ch '(') (ch ')') expr
 let identifierStr = regex @"[a-zA-Z_][a-zA-Z0-9_]*" .>> ws
+let private followedByCh c = followedBy (ch c)
 
 let identifier =
-    identifierStr .>>. getUserState
-    >>= fun (name, state) ->
-        match searchDef state name with
-        | Some(def, handler) ->
-            preturn (
-                match def.Init, def.Type with
-                | Some(ConstInt x), Type.Int -> makeConstInt x
-                | Some(ConstInt x), Type.Float -> makeConstFloat x
-                | Some(ConstFloat x), Type.Int -> makeConstInt x
-                | Some(ConstFloat x), Type.Float -> makeConstFloat x
-                | _, ty when ty.IsInt || ty.IsFloat ->
-                    { Inner = Var handler; Type = ty; Category = LValue; IsConst = false }
-                | _, ty -> { Inner = Var handler; Type = ty; Category = RValue; IsConst = false }
-            )
-        | None -> fail $"Undefined identifier: `{name}`."
+    tuple3 identifierStr getUserState (opt (choice [ followedByCh '(' >>% true; followedByCh '[' >>% false ]))
+    >>= fun (name, state, isCallOrArray) ->
+        match isCallOrArray with
+        | None ->
+            match searchDef state name with
+            | Some(def, handler) ->
+                preturn (
+                    match def.Init, def.Type with
+                    | Some(ConstInt x), Type.Int -> makeConstInt x
+                    | Some(ConstInt x), Type.Float -> makeConstFloat x
+                    | Some(ConstFloat x), Type.Int -> makeConstInt x
+                    | Some(ConstFloat x), Type.Float -> makeConstFloat x
+                    | _, ty when ty.IsInt || ty.IsFloat ->
+                        { Inner = Var handler; Type = ty; Category = LValue; IsConst = false }
+                    | _, ty -> { Inner = Var handler; Type = ty; Category = RValue; IsConst = false }
+                )
+            | None -> fail $"Undefined identifier: `{name}`."
+        | Some true ->
+            between (ch '(') (ch ')') (sepBy expr (ch ','))
+            >>= fun args ->
+                match searchDef state name with
+                | Some(def, handler) ->
+                    match def.Type with
+                    | Type.Function(retType, paramTypes) ->
+                        if paramTypes.Length <> args.Length then
+                            fail $"Function `{name}` argument count mismatch."
+                        else if not (List.forall2 typeConvertible (args |> List.map _.Type) paramTypes) then
+                            fail $"Function `{name}` argument type mismatch."
+                        else
+                            preturn { Inner = Func(handler, args); Type = retType; Category = RValue; IsConst = false }
+                    | _ -> fail $"`{name}` is not a function."
+                | None -> fail $"Undefined function: `{name}`."
+        | Some false ->
+            let intExpr =
+                expr
+                >>= fun expr ->
+                    match expr.Type with
+                    | Type.Int -> preturn expr
+                    | _ -> fail "Expecting an expression of type `int`."
 
-let funcCall =
-    attempt (tuple3 identifierStr (between (ch '(') (ch ')') (sepBy expr (ch ','))) getUserState)
-    >>= fun (name, args, state) ->
-        match searchDef state name with
-        | Some(def, handler) ->
-            match def.Type with
-            | Type.Function(retType, paramTypes) ->
-                if paramTypes.Length <> args.Length then
-                    fail $"Function `{name}` argument count mismatch."
-                else if not (List.forall2 typeConvertible (args |> List.map _.Type) paramTypes) then
-                    fail $"Function `{name}` argument type mismatch."
-                else
-                    preturn { Inner = Func(handler, args); Type = retType; Category = RValue; IsConst = false }
-            | _ -> fail $"`{name}` is not a function."
-        | None -> fail $"Undefined function: `{name}`."
+            many1 (between (ch '[') (ch ']') intExpr)
+            >>= fun indices ->
+                let checkPointer indices handler baseType dims init =
+                    let indicesLen = List.length indices
+                    let dimsLen = List.length dims
+
+                    if indicesLen - 1 < dimsLen then
+                        preturn
+                            { Inner = ArrayElem(handler, indices)
+                              Type = Pointer(baseType, List.skip indicesLen dims)
+                              Category = RValue
+                              IsConst = false }
+                    else if indicesLen - 1 = dimsLen then
+                        if Option.isSome init && List.forall _.Inner.IsInt indices then
+                            let rec getElem list_ indices =
+                                match indices with
+                                | [ i ] ->
+                                    match List.tryItem i list_ with
+                                    | Some(Int x) -> makeConstInt x
+                                    | Some(Float x) -> makeConstFloat x
+                                    | _ ->
+                                        match baseType with
+                                        | Type.Int -> makeConstInt 0
+                                        | Type.Float -> makeConstFloat 0.0f
+                                        | _ -> unreachable ()
+
+                                | i :: rest ->
+                                    match List.tryItem i list_ with
+                                    | Some(ConstInitList subList) -> getElem subList rest
+                                    | _ ->
+                                        match baseType with
+                                        | Type.Int -> makeConstInt 0
+                                        | Type.Float -> makeConstFloat 0.0f
+                                        | _ -> unreachable ()
+                                | _ -> unreachable ()
+
+                            match init with
+                            | Some list_ ->
+                                preturn (
+                                    getElem
+                                        list_
+                                        (List.map
+                                            (fun e ->
+                                                match e.Inner with
+                                                | ExprInner.Int i -> i
+                                                | _ -> unreachable ())
+                                            indices)
+                                )
+                            | None -> unreachable ()
+                        else
+                            preturn
+                                { Inner = ArrayElem(handler, indices)
+                                  Type = baseType
+                                  Category = LValue
+                                  IsConst = false }
+                    else
+                        fail $"Too many indices for array or pointer `{name}`."
+
+                match searchDef state name with
+                | Some({ Init = Some(ConstList list); Type = Array(baseType, dims) }, handler) ->
+                    checkPointer indices handler baseType dims (Some list)
+                | Some({ Type = Pointer(baseType, dims) }, handler) -> checkPointer indices handler baseType dims None
+                | Some({ Type = Array(baseType, dims) }, handler) -> checkPointer indices handler baseType dims None
+                | Some _ -> fail $"`{name}` is not an array or pointer."
+                | None -> fail $"Undefined function: `{name}`."
 
 let block, blockRef = createParserForwardedToRef ()
 let statement, stmtRef = createParserForwardedToRef ()
 
-operatorParser.TermParser <- choice [ literal; funcCall; identifier; parenExpr ]
+operatorParser.TermParser <- choice [ literal; identifier; parenExpr ]
 
 let break_ =
     keyword "break" .>> ch ';' >>. getUserState
@@ -568,8 +643,6 @@ module Definitions =
                         state))
                 >>. preturn [ handler ]
             | _ -> fail $"Conflicting types for `{name}`."
-
-    let private followedByCh c = followedBy (ch c)
 
     let private constArithExpr =
         constExpr
