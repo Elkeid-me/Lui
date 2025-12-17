@@ -475,9 +475,10 @@ let identifier =
 
                 match searchDef state name with
                 | Some({ Init = Some(ConstList list); Type = Array(baseType, dims) }, handler) ->
-                    checkPointer indices handler baseType dims (Some list)
+                    checkPointer indices handler baseType (List.tail dims) (Some list)
+                | Some({ Type = Array(baseType, dims) }, handler) ->
+                    checkPointer indices handler baseType (List.tail dims) None
                 | Some({ Type = Pointer(baseType, dims) }, handler) -> checkPointer indices handler baseType dims None
-                | Some({ Type = Array(baseType, dims) }, handler) -> checkPointer indices handler baseType dims None
                 | Some _ -> fail $"`{name}` is not an array or pointer."
                 | None -> fail $"Undefined function: `{name}`."
 
