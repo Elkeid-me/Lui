@@ -659,147 +659,99 @@ module Definitions =
     let private constInitList =
         between (ch '{') (ch '}') (sepBy constInitListItem (ch ','))
 
-    let processInitList dims initList =
+    let processGenericInitList
+        (isLeaf: 'T -> bool)
+        (isNode: 'T -> 'T list option)
+        (wrap: 'T list -> 'T)
+        (dims: int list)
+        (initList: 'T list)
+        =
+
         let totalDepth = List.length dims
-        /// 计算各维度的乘积
-        ///
-        /// 设 `int l_int[2][14][51][4];`，其 `dimsProd` 为 `[2856; 2856; 204; 4]`。
         let dimsProd = (dims, 1) ||> List.scanBack (*) |> List.take totalDepth
 
-        /// 根据 `dimsProd` 提供的维度信息，处理初始化列表 `initList`，返回完整的初始化列表。
-        let rec processInitListImpl dimsProd initList =
-            /// 将 `initElem` 插入到 `currentList` 中，返回新的初始化列表。假设当前已填充 `sum` 个元素。
+        let rec impl dimsProd currentInitList =
             let insert (sum, list_) initElem =
-                match initElem with
-                | InitListItem.Expr expr ->
-                    let rec insertExpr list_ dimsProd expr =
+                match isNode initElem with
+                | None when isLeaf initElem -> // 处理叶子节点 (Expr/Int/Float)
+                    let rec insertLeaf list_ dimsProd leaf =
                         match dimsProd with
-                        | [] -> InitListItem.Expr expr :: list_
+                        | [] -> leaf :: list_
                         | i :: rest ->
                             let paddedList =
                                 if List.isEmpty list_ || sum % i = 0 then
-                                    InitList [] :: list_
+                                    wrap [] :: list_
                                 else
                                     list_
 
                             match paddedList with
-                            | InitList head :: restList -> InitList(insertExpr head rest expr) :: restList
-                            | _ -> unreachable ()
+                            | head :: restList -> wrap (insertLeaf (isNode head |> Option.get) rest leaf) :: restList
+                            | _ -> failwith "unreachable"
 
-                    let newList = insertExpr list_ (List.tail dimsProd) expr
-                    let newSum = sum + 1
+                    let newList = insertLeaf list_ (List.tail dimsProd) initElem
+                    sum + 1, newList
 
-                    if newSum <= List.head dimsProd then
-                        newSum, newList
-                    else
-                        failwith "Too many initializers in initializer list."
-
-                | InitList initList ->
-                    let rec insertList list_ dimsProd initList =
+                | Some subInitList -> // 处理嵌套列表 (InitList/ConstInitList)
+                    let rec insertSubList list_ dimsProd subItems =
                         match dimsProd with
                         | [] -> failwith "Too many initializer lists."
                         | _ :: i :: _ when sum % i = 0 ->
-                            let subList = processInitListImpl (List.tail dimsProd) initList
-                            i, InitList subList :: list_
+                            let processedSub = impl (List.tail dimsProd) subItems
+                            i, wrap processedSub :: list_
                         | _ :: rest ->
-                            let newList = if List.isEmpty list_ then InitList [] :: list_ else list_
+                            let newList = if List.isEmpty list_ then wrap [] :: list_ else list_
 
                             match newList with
-                            | InitList head :: restList ->
-                                let subSum, newHead = insertList head rest initList
-                                let newList = InitList newHead :: restList
-                                subSum, newList
+                            | head :: restList ->
+                                let subSum, newHead = insertSubList (isNode head |> Option.get) rest subItems
+                                subSum, wrap newHead :: restList
                             | _ -> failwith "Initializer list does not match array dimensions."
 
-                    let subSum, newList = insertList list_ dimsProd initList
+                    let subSum, newList = insertSubList list_ dimsProd subInitList
                     let newSum = sum + subSum
 
                     if newSum <= List.head dimsProd then
                         newSum, newList
                     else
-                        failwith "Too many initializers in initializer list."
+                        failwith "Too many initializers."
+                | _ -> failwith "Unknown item type."
 
-            initList |> List.fold insert (0, []) |> snd
+            currentInitList |> List.fold insert (0, []) |> snd
 
-        let rec reverseList l =
+        let rec reverseRecursive l =
             l
-            |> List.map (function
-                | InitList subList -> InitList(reverseList subList)
-                | expr -> expr)
+            |> List.map (fun x ->
+                match isNode x with
+                | Some sub -> wrap (reverseRecursive sub)
+                | None -> x)
             |> List.rev
 
-        processInitListImpl dimsProd initList |> reverseList
+        impl dimsProd initList |> reverseRecursive
+
+    let processInitList dims initList =
+        processGenericInitList
+            (function
+            | InitListItem.Expr _ -> true
+            | _ -> false)
+            (function
+            | InitList l -> Some l
+            | _ -> None)
+            InitList
+            dims
+            initList
 
     let processConstInitList dims initList =
-        let totalDepth = List.length dims
-        let dimsProd = (dims, 1) ||> List.scanBack (*) |> List.take totalDepth
-
-        let rec processInitListImpl dimsProd initList =
-            let insert (sum, list_) initElem =
-                match initElem with
-                | Int _
-                | Float _ ->
-                    let rec insertExpr list_ dimsProd initElem =
-                        match dimsProd with
-                        | [] -> initElem :: list_
-                        | i :: rest ->
-                            let paddedList =
-                                if List.isEmpty list_ || sum % i = 0 then
-                                    ConstInitList [] :: list_
-                                else
-                                    list_
-
-                            match paddedList with
-                            | ConstInitList head :: restList -> ConstInitList(insertExpr head rest initElem) :: restList
-                            | _ -> unreachable ()
-
-                    let newList = insertExpr list_ (List.tail dimsProd) initElem
-                    let newSum = sum + 1
-
-                    if newSum <= List.head dimsProd then
-                        newSum, newList
-                    else
-                        failwith "Too many initializers in initializer list."
-
-                | ConstInitList initList ->
-                    let rec insertList list_ dimsProd initList =
-                        match dimsProd with
-                        | [] -> failwith "Too many initializer lists."
-                        | _ :: i :: _ when sum % i = 0 ->
-                            let subList = processInitListImpl (List.tail dimsProd) initList
-                            i, ConstInitList subList :: list_
-                        | _ :: rest ->
-                            let newList =
-                                if List.isEmpty list_ then
-                                    ConstInitList [] :: list_
-                                else
-                                    list_
-
-                            match newList with
-                            | ConstInitList head :: restList ->
-                                let subSum, newHead = insertList head rest initList
-                                let newList = ConstInitList newHead :: restList
-                                subSum, newList
-                            | _ -> failwith "Initializer list does not match array dimensions."
-
-                    let subSum, newList = insertList list_ dimsProd initList
-                    let newSum = sum + subSum
-
-                    if newSum <= List.head dimsProd then
-                        newSum, newList
-                    else
-                        failwith "Too many initializers in initializer list."
-
-            initList |> List.fold insert (0, []) |> snd
-
-        let rec reverseList l =
-            l
-            |> List.map (function
-                | ConstInitList subList -> ConstInitList(reverseList subList)
-                | expr -> expr)
-            |> List.rev
-
-        processInitListImpl dimsProd initList |> reverseList
+        processGenericInitList
+            (function
+            | Int _
+            | Float _ -> true
+            | _ -> false)
+            (function
+            | ConstInitList l -> Some l
+            | _ -> None)
+            ConstInitList
+            dims
+            initList
 
     let private constDefAfter =
         opt (many1 (ch '[' >>. posiConstInt .>> ch ']')) .>> ch '='
