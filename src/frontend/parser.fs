@@ -659,21 +659,23 @@ module Definitions =
     let private constInitList =
         between (ch '{') (ch '}') (sepBy constInitListItem (ch ','))
 
-    let processGenericInitList
-        (isLeaf: 'T -> bool)
-        (isNode: 'T -> 'T list option)
-        (wrap: 'T list -> 'T)
-        (dims: int list)
-        (initList: 'T list)
-        =
+    type private Variant<'T> =
+        | List of 'T list
+        | Leaf of 'T
 
+        member this.GetList =
+            match this with
+            | List l -> l
+            | _ -> failwith "Not a list."
+
+    let private processGenericInitList isList wrap dims initList =
         let totalDepth = List.length dims
         let dimsProd = (dims, 1) ||> List.scanBack (*) |> List.take totalDepth
 
         let rec impl dimsProd currentInitList =
             let insert (sum, list_) initElem =
-                match isNode initElem with
-                | None when isLeaf initElem -> // 处理叶子节点 (Expr/Int/Float)
+                match isList initElem with
+                | Leaf leaf -> // 处理叶子节点 (Expr/Int/Float)
                     let rec insertLeaf list_ dimsProd leaf =
                         match dimsProd with
                         | [] -> leaf :: list_
@@ -685,13 +687,13 @@ module Definitions =
                                     list_
 
                             match paddedList with
-                            | head :: restList -> wrap (insertLeaf (isNode head |> Option.get) rest leaf) :: restList
+                            | head :: restList -> wrap (insertLeaf (isList head).GetList rest leaf) :: restList
                             | _ -> failwith "unreachable"
 
-                    let newList = insertLeaf list_ (List.tail dimsProd) initElem
+                    let newList = insertLeaf list_ (List.tail dimsProd) leaf
                     sum + 1, newList
 
-                | Some subInitList -> // 处理嵌套列表 (InitList/ConstInitList)
+                | List subInitList -> // 处理嵌套列表 (InitList/ConstInitList)
                     let rec insertSubList list_ dimsProd subItems =
                         match dimsProd with
                         | [] -> failwith "Too many initializer lists."
@@ -703,7 +705,7 @@ module Definitions =
 
                             match newList with
                             | head :: restList ->
-                                let subSum, newHead = insertSubList (isNode head |> Option.get) rest subItems
+                                let subSum, newHead = insertSubList (isList head).GetList rest subItems
                                 subSum, wrap newHead :: restList
                             | _ -> failwith "Initializer list does not match array dimensions."
 
@@ -714,41 +716,33 @@ module Definitions =
                         newSum, newList
                     else
                         failwith "Too many initializers."
-                | _ -> failwith "Unknown item type."
 
             currentInitList |> List.fold insert (0, []) |> snd
 
         let rec reverseRecursive l =
             l
             |> List.map (fun x ->
-                match isNode x with
-                | Some sub -> wrap (reverseRecursive sub)
-                | None -> x)
+                match isList x with
+                | List sub -> wrap (reverseRecursive sub)
+                | Leaf _ -> x)
             |> List.rev
 
         impl dimsProd initList |> reverseRecursive
 
-    let processInitList dims initList =
+    let private processInitList dims initList =
         processGenericInitList
             (function
-            | InitListItem.Expr _ -> true
-            | _ -> false)
-            (function
-            | InitList l -> Some l
-            | _ -> None)
+            | InitList l -> List l
+            | x -> Leaf x)
             InitList
             dims
             initList
 
-    let processConstInitList dims initList =
+    let private processConstInitList dims initList =
         processGenericInitList
             (function
-            | Int _
-            | Float _ -> true
-            | _ -> false)
-            (function
-            | ConstInitList l -> Some l
-            | _ -> None)
+            | ConstInitList l -> List l
+            | x -> Leaf x)
             ConstInitList
             dims
             initList
@@ -773,7 +767,7 @@ module Definitions =
             match arrDims with
             | Some dims ->
                 opt (ch '=' >>. initList)
-                |>> fun init -> Some(dims |> List.map uint64), init |> Option.map (processInitList dims >> List)
+                |>> fun init -> Some(dims |> List.map uint64), init |> Option.map (processInitList dims >> Init.List)
             | None -> opt (ch '=' >>. arithExpr) |>> fun exprOpt -> None, Option.map Expr exprOpt
 
     let private makeVarDef name arrDimOpt initOpt =
