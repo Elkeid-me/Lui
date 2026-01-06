@@ -428,6 +428,12 @@ let identifier =
                               Category = RValue
                               IsConst = false }
                     else if indicesLen - 1 = dimsLen then
+                        let defaultValue =
+                            match baseType with
+                            | Type.Int -> makeConstInt 0
+                            | Type.Float -> makeConstFloat 0.0f
+                            | _ -> unreachable ()
+
                         if Option.isSome init && List.forall _.Inner.IsInt indices then
                             let rec getElem list_ indices =
                                 match indices with
@@ -435,34 +441,22 @@ let identifier =
                                     match List.tryItem i list_ with
                                     | Some(Int x) -> makeConstInt x
                                     | Some(Float x) -> makeConstFloat x
-                                    | _ ->
-                                        match baseType with
-                                        | Type.Int -> makeConstInt 0
-                                        | Type.Float -> makeConstFloat 0.0f
-                                        | _ -> unreachable ()
+                                    | _ -> defaultValue
 
                                 | i :: rest ->
                                     match List.tryItem i list_ with
                                     | Some(ConstInitList subList) -> getElem subList rest
-                                    | _ ->
-                                        match baseType with
-                                        | Type.Int -> makeConstInt 0
-                                        | Type.Float -> makeConstFloat 0.0f
-                                        | _ -> unreachable ()
+                                    | _ -> defaultValue
                                 | _ -> unreachable ()
 
                             match init with
                             | Some list_ ->
-                                preturn (
-                                    getElem
-                                        list_
-                                        (List.map
-                                            (fun e ->
-                                                match e.Inner with
-                                                | ExprInner.Int i -> i
-                                                | _ -> unreachable ())
-                                            indices)
-                                )
+                                let getInt e =
+                                    match e.Inner with
+                                    | ExprInner.Int i -> i
+                                    | _ -> unreachable ()
+
+                                preturn (getElem list_ (List.map getInt indices))
                             | None -> unreachable ()
                         else
                             preturn
