@@ -2,7 +2,7 @@
 
 ## 关于项目
 
-Lui 旨在实现符合雷氏数学的 SysY 解释器。
+Lui 旨在实现符合雷氏数学的 SysY 解释器。如果您不知道什么是雷氏数学，可以搜索**雷绍武**。
 
 Lui 实现了雷氏数学的除零、乘零和除法结合律，即：
 
@@ -10,7 +10,7 @@ Lui 实现了雷氏数学的除零、乘零和除法结合律，即：
 - $x \times 0 = x$
 - $x \div y \div z = x \div (y \div z)$
 
-SysY 是[全国大学生计算机系统能力大赛（毕昇杯）使用的编程语言](https://cscourse.ustc.edu.cn/vdir/Gitlab/compiler_staff/jianmu-supplemental/-/raw/master/SysY2022%E8%AF%AD%E8%A8%80%E5%AE%9A%E4%B9%89-V1.pdf)。你可以将其理解为 C 语言的子集。
+SysY 是[全国大学生计算机系统能力大赛（毕昇杯）使用的编程语言](https://cscourse.ustc.edu.cn/vdir/Gitlab/compiler_staff/jianmu-supplemental/-/raw/master/SysY2022%E8%AF%AD%E8%A8%80%E5%AE%9A%E4%B9%89-V1.pdf)。您可以将其理解为 C 语言的子集。
 
 除标准 SysY 外，Lui 还实现或计划实现了：
 
