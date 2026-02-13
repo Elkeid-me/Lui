@@ -20,8 +20,17 @@ module Parser
 open AST
 open FParsec
 
-let unreachable () = failwith "Unreachable code."
-let todo () = failwith "Not implemented yet."
+module Panic =
+    open System.Runtime.CompilerServices
+
+    type Detail =
+        static member panic(?message: string, [<CallerFilePath>] ?file: string, [<CallerLineNumber>] ?line: int) =
+            let message = defaultArg message "Unknown error."
+            printfn "\"%s\" happened at file %s, line %d" message (defaultArg file "unknown") (defaultArg line 0)
+            exit 1
+
+let unreachable () = Panic.Detail.panic "Unreachable code."
+let todo () = Panic.Detail.panic "Not implemented yet."
 
 let createCounter () =
     let count = 0 |> uint |> ref
