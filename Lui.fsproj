@@ -10,9 +10,9 @@
 </PropertyGroup>
 
   <ItemGroup>
-    <Compile Include="src\frontend\ast.fs" />
-    <Compile Include="src\frontend\parser.fs" />
-    <Compile Include="src\main.fs" />
+    <Compile Include="src/frontend/ast.fs" />
+    <Compile Include="src/frontend/parser.fs" />
+    <Compile Include="src/main.fs" />
   </ItemGroup>
 
   <ItemGroup>
