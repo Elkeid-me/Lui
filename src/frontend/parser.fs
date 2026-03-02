@@ -1,4 +1,4 @@
-// Copyright (C) 2025 Elkeid Me
+// Copyright (C) 2025-2026 Elkeid Me
 //
 // This file is part of Lui.
 //
@@ -19,18 +19,7 @@ module Parser
 
 open AST
 open FParsec
-
-module Panic =
-    open System.Runtime.CompilerServices
-
-    type Detail =
-        static member panic(?message: string, [<CallerFilePath>] ?file: string, [<CallerLineNumber>] ?line: int) =
-            let message = defaultArg message "Unknown error."
-            printfn "\"%s\" happened at file %s, line %d" message (defaultArg file "unknown") (defaultArg line 0)
-            exit 1
-
-let unreachable () = Panic.Detail.panic "Unreachable code."
-let todo () = Panic.Detail.panic "Not implemented yet."
+open Utils
 
 let createCounter () =
     let count = 0 |> uint |> ref
@@ -56,134 +45,121 @@ type Context =
       Blocks: BlockInfo list
       ParsingType: Type }
 
-let isInLoop state = (List.head state.Blocks).InLoop
+let private isInLoop state = (List.head state.Blocks).InLoop
 
-let isGlobal state =
+let private isGlobal state =
     match state.Blocks with
     | [ _ ] -> true
     | _ -> false
 
-let enterBlock startLoopNow state =
+let private enterBlock startLoopNow state =
     let inLoop = if startLoopNow then true else isInLoop state
     { state with Blocks = { SymbolTable = HashMap(); InLoop = inLoop } :: state.Blocks }
 
-let enterFuncBody retType state =
+let private enterFuncBody retType state =
     { state with
         RetType = retType
         Blocks = { SymbolTable = HashMap(); InLoop = false } :: state.Blocks }
 
-let exitBlock state =
+let private exitBlock state =
     { state with Blocks = List.tail state.Blocks }
 
-let insertDef handler def state =
+let private insertDef handler def state =
     state.SymbolTable.Add(handler, def)
-    state.Blocks.Head.SymbolTable.Add(def.ID, handler)
+    (List.head state.Blocks).SymbolTable.Add(def.ID, handler)
     state
 
-let insertDefs handlers defs state =
+let private insertDefs handlers defs state =
     for handler, def in List.zip handlers defs do
         state.SymbolTable.Add(handler, def)
-        state.Blocks.Head.SymbolTable.Add(def.ID, handler)
+        (List.head state.Blocks).SymbolTable.Add(def.ID, handler)
 
     state
 
-let searchDef context identifier =
+let private searchDef context identifier =
     context.Blocks
     |> List.tryFind _.SymbolTable.ContainsKey(identifier)
     |> Option.map _.SymbolTable.[identifier]
     |> Option.map (fun h -> context.SymbolTable.[h], h)
 
-let currentExist context identifier =
-    context.Blocks.Head.SymbolTable.ContainsKey identifier
+let private currentExist context identifier =
+    (List.head context.Blocks).SymbolTable.ContainsKey identifier
 
-let boolIntFun f a b = if f a b then 1 else 0
+let inline private checkType ty (l: Expr) (r: Expr) =
+    match l.Type, r.Type with
+    | Type.Int, Type.Int -> Type.Int
+    | Type.Int, Type.Float
+    | Type.Float, Type.Int
+    | Type.Float, Type.Float -> ty
+    | _ -> failwith "Invalid type of operands."
 
-let arithOpCheck fnInt fnFloat constructor (l: Expr) (r: Expr) =
-    let ty =
-        match l.Type, r.Type with
-        | Type.Int, Type.Int -> Type.Int
-        | Type.Int, Type.Float
-        | Type.Float, Type.Int
-        | Type.Float, Type.Float -> Type.Float
-        | _ -> failwith "Invalid type of operands."
+let inline private checkTypeInt (l: Expr) (r: Expr) =
+    match l.Type, r.Type with
+    | Type.Int, Type.Int -> Type.Int
+    | _ -> failwith "Invalid type of operands."
 
-    let inner =
-        match l.Inner, r.Inner with
-        | ExprInner.Int l, ExprInner.Int r -> ExprInner.Int(fnInt l r)
-        | ExprInner.Float l, ExprInner.Int r -> ExprInner.Float(fnFloat l (single r))
-        | ExprInner.Int l, ExprInner.Float r -> ExprInner.Float(fnFloat (single l) r)
-        | ExprInner.Float l, ExprInner.Float r -> ExprInner.Float(fnFloat l r)
-        | _ -> constructor (l, r)
+let inline private getInner cvtI cvtIF cvtFF fnInt fnFloat constructor (l: Expr) (r: Expr) =
+    match l.Inner, r.Inner with
+    | ExprInner.Int l, ExprInner.Int r -> fnInt (cvtI l) (cvtI r)
+    | ExprInner.Float l, ExprInner.Int r -> fnFloat (cvtFF l) (cvtIF r)
+    | ExprInner.Int l, ExprInner.Float r -> fnFloat (cvtIF l) (cvtFF r)
+    | ExprInner.Float l, ExprInner.Float r -> fnFloat (cvtFF l) (cvtFF r)
+    | _ -> constructor (l, r)
 
+let inline private getIntInner fn constructor (l: Expr) (r: Expr) =
+    match l.Inner, r.Inner with
+    | ExprInner.Int l, ExprInner.Int r -> ExprInner.Int(fn l r)
+    | _ -> constructor (l, r)
+
+let inline private binaryOpCheck checkType compute constructor (l: Expr) (r: Expr) =
+    let ty = checkType l r
+    let inner = compute constructor l r
     { Inner = inner; Type = ty; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
-let intOpCheck fnInt constructor (l: Expr) (r: Expr) =
-    if not (l.Type.IsInt && r.Type.IsInt) then failwith "Invalid type of operands."
+let inline private makeInt f l r = ExprInner.Int(f l r)
+let inline private makeFloat f l r = ExprInner.Float(f l r)
 
-    let inner =
-        match l.Inner, r.Inner with
-        | ExprInner.Int l, ExprInner.Int r -> ExprInner.Int(fnInt l r)
-        | _ -> constructor (l, r)
+let inline private arithOpCheck fnInt fnFloat =
+    binaryOpCheck (checkType Type.Float) (getInner id single id (makeInt fnInt) (makeFloat fnFloat))
 
-    { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
+let inline private intOpCheck fnInt =
+    binaryOpCheck checkTypeInt (getIntInner fnInt)
 
-let logicOpCheck fnLogic constructor (l: Expr) (r: Expr) =
-    if not ((l.Type.IsInt || l.Type.IsFloat) && (r.Type.IsInt || r.Type.IsFloat)) then
-        failwith "Invalid type of operands."
+let inline private logicOpCheck fnLogic =
+    binaryOpCheck (checkType Type.Int) (getInner ((<>) 0) ((<>) 0) ((<>) 0.0f) (makeInt fnLogic) (makeInt fnLogic))
 
-    let inner =
-        match l.Inner, r.Inner with
-        | ExprInner.Int l, ExprInner.Int r -> ExprInner.Int(fnLogic (l <> 0) (r <> 0))
-        | ExprInner.Float l, ExprInner.Int r -> ExprInner.Int(fnLogic (l <> 0.0f) (r <> 0))
-        | ExprInner.Int l, ExprInner.Float r -> ExprInner.Int(fnLogic (l <> 0) (r <> 0.0f))
-        | ExprInner.Float l, ExprInner.Float r -> ExprInner.Int(fnLogic (l <> 0.0f) (r <> 0.0f))
-        | _ -> constructor (l, r)
+let inline private relOpCheck fnIntComp fnFloatComp =
+    binaryOpCheck (checkType Type.Int) (getInner id single id (makeInt fnIntComp) (makeInt fnFloatComp))
 
-    { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
-
-let relOpCheck fnIntComp fnFloatComp constructor (l: Expr) (r: Expr) =
-    if not ((l.Type.IsInt || l.Type.IsFloat) && (r.Type.IsInt || r.Type.IsFloat)) then
-        failwith "Invalid type of operands."
-
-    let inner =
-        match l.Inner, r.Inner with
-        | ExprInner.Int l, ExprInner.Int r -> ExprInner.Int(fnIntComp l r)
-        | ExprInner.Float l, ExprInner.Int r -> ExprInner.Int(fnFloatComp l (single r))
-        | ExprInner.Int l, ExprInner.Float r -> ExprInner.Int(fnFloatComp (single l) r)
-        | ExprInner.Float l, ExprInner.Float r -> ExprInner.Int(fnFloatComp l r)
-        | _ -> constructor (l, r)
-
-    { Inner = inner; Type = Type.Int; Category = RValue; IsConst = l.IsConst && r.IsConst }
-
-let assignOpCheck constructor (l: Expr) (r: Expr) =
+let inline private assignOpCheck constructor (l: Expr) (r: Expr) =
     if l.Category <> LValue then failwith "R-value on the left hand side of assign operator."
+    let ty = checkType l.Type l r
+    { Inner = constructor (l, r); Type = ty; Category = LValue; IsConst = false }
 
-    if not ((l.Type.IsInt || l.Type.IsFloat) && (r.Type.IsInt || r.Type.IsFloat)) then
-        failwith "Invalid type of operands."
-
-    { Inner = constructor (l, r); Type = l.Type; Category = LValue; IsConst = false }
-
-let intAssignOpCheck constructor (l: Expr) (r: Expr) =
+let inline private intAssignOpCheck constructor (l: Expr) (r: Expr) =
     if l.Category <> LValue then failwith "R-value on the left hand side of assign operator."
+    let ty = checkType Type.Int l r
+    { Inner = constructor (l, r); Type = ty; Category = LValue; IsConst = false }
 
-    if not (l.Type.IsInt && r.Type.IsInt) then failwith "Invalid type of operands."
-    { Inner = constructor (l, r); Type = Type.Int; Category = LValue; IsConst = false }
+let private cxxComment =
+    skipString "//" .>> manyCharsTill anyChar (skipNewline <|> eof)
 
-let cxxComment = skipString "//" .>> manyCharsTill anyChar (skipNewline <|> eof)
-let blockComment = skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
-let singleSpace = choiceL [ cxxComment; blockComment; skipAnyOf " \t\n" ] ""
-let ws = skipMany singleSpace
+let private blockComment =
+    skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
 
-let str s = pstring s .>> ws
-let ch c = pchar c .>> ws
+let private singleSpace = choiceL [ cxxComment; blockComment; skipAnyOf " \t\n" ] ""
+let private ws = skipMany singleSpace
 
-let inline makeConstInt (x: 'T) =
+let private str s = pstring s .>> ws
+let private ch c = pchar c .>> ws
+
+let inline private makeConstInt x =
     { Inner = x |> int |> ExprInner.Int; Type = Type.Int; Category = RValue; IsConst = true }
 
-let inline makeConstFloat (x: 'T) =
+let inline private makeConstFloat x =
     { Inner = x |> single |> ExprInner.Float; Type = Type.Float; Category = RValue; IsConst = true }
 
-let literal =
+let private literal =
     let cvtInt (base_: int) int_ = System.Convert.ToInt32(int_, base_)
     let hexInt = regex @"0[xX][0-9a-fA-F]+" |>> (cvtInt 16 >> makeConstInt)
     let binInt = regex @"0[bB][01]+" |>> (cvtInt 2 >> makeConstInt)
@@ -208,13 +184,17 @@ module Operators =
 
     let private leiArithInt f a b =
         match a, b with
-        | a, 0 -> a
-        | a, b -> f a b
+        | 0, x
+        | x, 0 -> x
+        | _ -> f a b
 
     let private leiArithFloat f a b =
         match a, b with
-        | a, 0.0f -> a
-        | a, b -> f a b
+        | 0.0f, x
+        | x, 0.0f -> x
+        | _ -> f a b
+
+    let private boolIntFun f a b = if f a b then 1 else 0
 
     let infixOperators =
         [ { Symbol = "="; Precedence = 1; Assoc = Associativity.Right; Map = assignOpCheck Assignment }
@@ -289,21 +269,6 @@ module Operators =
 
     type UnaryOperatorDetails = { Symbol: string; Precedence: int; Map: Expr -> Expr }
 
-    let checkArithUnary fnInt fnFloat constructor (expr: Expr) =
-        let ty =
-            match expr.Type with
-            | Type.Int -> Type.Int
-            | Type.Float -> Type.Float
-            | _ -> failwith "Invalid type of operand."
-
-        let inner =
-            match expr.Inner with
-            | ExprInner.Int i -> ExprInner.Int(fnInt i)
-            | ExprInner.Float f -> ExprInner.Float(fnFloat f)
-            | _ -> constructor expr
-
-        { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
-
     let private checkNot (expr: Expr) =
         if not (expr.Type.IsInt || expr.Type.IsFloat) then failwith "Invalid type of operand."
 
@@ -336,7 +301,7 @@ module Operators =
         let inner =
             match expr.Inner with
             | ExprInner.Int i -> ExprInner.Int ~~~i
-            | _ -> Nega expr
+            | _ -> Not expr
 
         { Inner = inner; Type = Type.Int; Category = RValue; IsConst = expr.IsConst }
 
@@ -352,7 +317,7 @@ module Operators =
         [ { Symbol = "++"; Precedence = 13; Map = id }
           { Symbol = "--"; Precedence = 13; Map = id } ]
 
-let operatorParser = OperatorPrecedenceParser<Expr, unit, Context>()
+let private operatorParser = OperatorPrecedenceParser<Expr, unit, Context>()
 
 Operators.infixOperators
 |> List.iter (fun details ->
@@ -375,15 +340,15 @@ Operators.postfixOperators
 
     operatorParser.AddOperator operator)
 
-let keyword str =
+let private keyword str =
     attempt (pstring str .>> notFollowedBy (regex @"[a-zA-Z0-9_]")) .>> ws
 
-let expr = operatorParser.ExpressionParser .>> ws <?> "an expression"
-let parenExpr = between (ch '(') (ch ')') expr
-let identifierStr = regex @"[a-zA-Z_][a-zA-Z0-9_]*" .>> ws
+let private expr = operatorParser.ExpressionParser .>> ws <?> "an expression"
+let private parenExpr = between (ch '(') (ch ')') expr
+let private identifierStr = regex @"[a-zA-Z_][a-zA-Z0-9_]*" .>> ws
 let private followedByCh c = followedBy (ch c)
 
-let identifier =
+let private identifier =
     tuple3 identifierStr getUserState (opt (choice [ followedByCh '(' >>% true; followedByCh '[' >>% false ]))
     >>= fun (name, state, isCallOrArray) ->
         match isCallOrArray with
@@ -485,26 +450,26 @@ let identifier =
                 | Some _ -> fail $"`{name}` is not an array or pointer."
                 | None -> fail $"Undefined function: `{name}`."
 
-let block, blockRef = createParserForwardedToRef ()
-let statement, stmtRef = createParserForwardedToRef ()
+let private block, blockRef = createParserForwardedToRef ()
+let private statement, stmtRef = createParserForwardedToRef ()
 
 operatorParser.TermParser <- choice [ literal; identifier; parenExpr ]
 
-let break_ =
+let private break_ =
     keyword "break" .>> ch ';' >>. getUserState
     >>= fun state ->
         match isInLoop state with
         | true -> preturn Break
         | false -> fail "`break` statement must be used in loop."
 
-let continue_ =
+let private continue_ =
     keyword "continue" .>> ch ';' >>. getUserState
     >>= fun state ->
         match isInLoop state with
         | true -> preturn Continue
         | false -> fail "`continue` statement must be used in loop."
 
-let return_ =
+let private return_ =
     let checkExpr state (expr: Expr) =
         if typeConvertible expr.Type state.RetType then
             preturn (Some expr)
@@ -517,19 +482,19 @@ let return_ =
         | Void -> ch ';' >>% Return None
         | _ -> expr .>> ch ';' >>= checkExpr state |>> Return
 
-let blockItem, blockItemRef = createParserForwardedToRef ()
-let blockNoRegion = between (ch '{') (ch '}') (many blockItem)
+let private blockItem, blockItemRef = createParserForwardedToRef ()
+let private blockNoRegion = between (ch '{') (ch '}') (many blockItem)
 
-let ifWhileHelper =
+let private ifWhileHelper =
     choice [ blockNoRegion; statement |>> (Statement >> List.singleton) ]
 
-let ifHelper =
+let private ifHelper =
     between (updateUserState (enterBlock false)) (updateUserState exitBlock) ifWhileHelper
 
-let whileHelper =
+let private whileHelper =
     between (updateUserState (enterBlock true)) (updateUserState exitBlock) ifWhileHelper
 
-let arithExpr =
+let private arithExpr =
     expr
     >>= fun expr ->
         match expr.Type with
@@ -537,13 +502,13 @@ let arithExpr =
         | Type.Float -> preturn expr
         | _ -> fail "Expecting an expression of type `int` or `float`."
 
-let condExpr = between (ch '(') (ch ')') arithExpr
+let private condExpr = between (ch '(') (ch ')') arithExpr
 
-let ifElse =
+let private ifElse =
     tuple3 (keyword "if" >>. condExpr) ifHelper (opt (keyword "else" >>. ifHelper) |>> Option.defaultValue [])
     |>> If
 
-let whileLoop = keyword "while" >>. condExpr .>>. whileHelper |>> While
+let private whileLoop = keyword "while" >>. condExpr .>>. whileHelper |>> While
 
 module Definitions =
     let private int_ = keyword "int" >>% Type.Int
@@ -606,11 +571,11 @@ module Definitions =
                 let id = Option.defaultValue "" idOpt
                 { Init = None; Type = ty; ID = id; IsGlobal = false; IsArg = true })
 
-        let type_ = Type.Function(newRetType, newParams |> List.map fst)
+        let ty = Type.Function(newRetType, newParams |> List.map fst)
 
         let makeDef body =
             { Init = Some(Function { Block = body; ArgHandlers = argHandlers })
-              Type = type_
+              Type = ty
               ID = name
               IsGlobal = true
               IsArg = false }
@@ -803,7 +768,7 @@ module Definitions =
                 [ followedByCh '(' >>% true
                   choice [ followedByCh '['; followedByCh ','; followedByCh '='; followedByCh ';' ]
                   >>% false ])
-        >>= fun (const1, type_, const2, name, isFunc) ->
+        >>= fun (const1, ty, const2, name, isFunc) ->
             let const_ = const1.IsSome || const2.IsSome
 
             if isFunc && not const_ then
@@ -813,12 +778,12 @@ module Definitions =
                     getUserState
                 >>= fun (params_, isDecl, state) ->
                     if isDecl then
-                        makeFuncDecl type_ name params_ state
+                        makeFuncDecl ty name params_ state
                     else if isGlobal state then
-                        makeFuncDef type_ name params_ state
+                        makeFuncDef ty name params_ state
                     else
                         fail "Function definitions are only allowed in global scope."
-            else if type_.IsVoid then
+            else if ty.IsVoid then
                 fail "Variables cannot be of type void."
             else
                 let parse =
@@ -838,7 +803,7 @@ module Definitions =
 
                     tmp .>> ch ';' |>> fun (x, l) -> x :: Option.defaultValue [] l
 
-                updateUserState (fun state -> { state with ParsingType = type_ }) >>. parse
+                updateUserState (fun state -> { state with ParsingType = ty }) >>. parse
 
     initListItemRef.Value <- choice [ initList |>> InitList; arithExpr |>> InitListItem.Expr ]
     constInitListItemRef.Value <- choice [ constInitList |>> ConstInitList; constArithExpr ]
@@ -854,4 +819,21 @@ stmtRef.Value <-
     let emptyStmt = ch ';' >>% Empty
     choice [ whileLoop; ifElse; continue_; break_; return_; exprStmt; emptyStmt ]
 
-let translationUnit = many Definitions.defs |>> List.concat
+let private translationUnit = ws >>. (many Definitions.defs |>> List.concat) .>> eof
+
+let parse input =
+    let result =
+        runParserOnFile
+            translationUnit
+            { Counter = createCounter ()
+              SymbolTable = HashMap()
+              RetType = Void
+              ParsingType = Type.Int
+              Blocks = [ { SymbolTable = HashMap(); InLoop = false } ] }
+            input
+            System.Text.Encoding.UTF8
+
+    // 直接使用 `Ok`/`Error` 会与 FParsec 冲突，加 `Core` 命名空间。
+    match result with
+    | Success(ast, state, _) -> Core.Ok { Ast = ast; SymbolTable = state.SymbolTable }
+    | Failure(errMsg, _, _) -> Core.Error errMsg
