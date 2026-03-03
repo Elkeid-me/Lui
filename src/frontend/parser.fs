@@ -21,7 +21,7 @@ open AST
 open FParsec
 open Utils
 
-let createCounter () =
+let private createCounter () =
     let count = 0 |> uint |> ref
 
     fun () ->
@@ -85,7 +85,7 @@ let private searchDef context identifier =
 let private currentExist context identifier =
     (List.head context.Blocks).SymbolTable.ContainsKey identifier
 
-let inline private checkType ty (l: Expr) (r: Expr) =
+let private checkType ty (l: Expr) (r: Expr) =
     match l.Type, r.Type with
     | Type.Int, Type.Int -> Type.Int
     | Type.Int, Type.Float
@@ -93,12 +93,12 @@ let inline private checkType ty (l: Expr) (r: Expr) =
     | Type.Float, Type.Float -> ty
     | _ -> failwith "Invalid type of operands."
 
-let inline private checkTypeInt (l: Expr) (r: Expr) =
+let private checkTypeInt (l: Expr) (r: Expr) =
     match l.Type, r.Type with
     | Type.Int, Type.Int -> Type.Int
     | _ -> failwith "Invalid type of operands."
 
-let inline private getInner cvtI cvtIF cvtFF fnInt fnFloat constructor (l: Expr) (r: Expr) =
+let private getInner cvtI cvtIF cvtFF fnInt fnFloat constructor (l: Expr) (r: Expr) =
     match l.Inner, r.Inner with
     | ExprInner.Int l, ExprInner.Int r -> fnInt (cvtI l) (cvtI r)
     | ExprInner.Float l, ExprInner.Int r -> fnFloat (cvtFF l) (cvtIF r)
@@ -106,37 +106,37 @@ let inline private getInner cvtI cvtIF cvtFF fnInt fnFloat constructor (l: Expr)
     | ExprInner.Float l, ExprInner.Float r -> fnFloat (cvtFF l) (cvtFF r)
     | _ -> constructor (l, r)
 
-let inline private getIntInner fn constructor (l: Expr) (r: Expr) =
+let private getIntInner fn constructor (l: Expr) (r: Expr) =
     match l.Inner, r.Inner with
     | ExprInner.Int l, ExprInner.Int r -> ExprInner.Int(fn l r)
     | _ -> constructor (l, r)
 
-let inline private binaryOpCheck checkType compute constructor (l: Expr) (r: Expr) =
+let private binaryOpCheck checkType compute constructor (l: Expr) (r: Expr) =
     let ty = checkType l r
     let inner = compute constructor l r
     { Inner = inner; Type = ty; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
-let inline private makeInt f l r = ExprInner.Int(f l r)
-let inline private makeFloat f l r = ExprInner.Float(f l r)
+let private makeInt f l r = ExprInner.Int(f l r)
+let private makeFloat f l r = ExprInner.Float(f l r)
 
-let inline private arithOpCheck fnInt fnFloat =
+let private arithOpCheck fnInt fnFloat =
     binaryOpCheck (checkType Type.Float) (getInner id single id (makeInt fnInt) (makeFloat fnFloat))
 
-let inline private intOpCheck fnInt =
+let private intOpCheck fnInt =
     binaryOpCheck checkTypeInt (getIntInner fnInt)
 
-let inline private logicOpCheck fnLogic =
+let private logicOpCheck fnLogic =
     binaryOpCheck (checkType Type.Int) (getInner ((<>) 0) ((<>) 0) ((<>) 0.0f) (makeInt fnLogic) (makeInt fnLogic))
 
-let inline private relOpCheck fnIntComp fnFloatComp =
+let private relOpCheck fnIntComp fnFloatComp =
     binaryOpCheck (checkType Type.Int) (getInner id single id (makeInt fnIntComp) (makeInt fnFloatComp))
 
-let inline private assignOpCheck constructor (l: Expr) (r: Expr) =
+let private assignOpCheck constructor (l: Expr) (r: Expr) =
     if l.Category <> LValue then failwith "R-value on the left hand side of assign operator."
     let ty = checkType l.Type l r
     { Inner = constructor (l, r); Type = ty; Category = LValue; IsConst = false }
 
-let inline private intAssignOpCheck constructor (l: Expr) (r: Expr) =
+let private intAssignOpCheck constructor (l: Expr) (r: Expr) =
     if l.Category <> LValue then failwith "R-value on the left hand side of assign operator."
     let ty = checkType Type.Int l r
     { Inner = constructor (l, r); Type = ty; Category = LValue; IsConst = false }
@@ -147,10 +147,7 @@ let private cxxComment =
 let private blockComment =
     skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
 
-let private singleSpace = choiceL [ cxxComment; blockComment; skipAnyOf " \t\n" ] ""
-let private ws = skipMany singleSpace
-
-let private str s = pstring s .>> ws
+let private ws = skipMany (choice [ cxxComment; blockComment; skipAnyOf " \t\n" ])
 let private ch c = pchar c .>> ws
 
 let inline private makeConstInt x =
@@ -179,20 +176,11 @@ let private literal =
 
     pFloat <|> pInt .>> ws
 
-module Operators =
+module private Operators =
     type InfixOperatorDetails = { Symbol: string; Precedence: int; Assoc: Associativity; Map: Expr -> Expr -> Expr }
 
-    let private leiArithInt f a b =
-        match a, b with
-        | 0, x
-        | x, 0 -> x
-        | _ -> f a b
-
-    let private leiArithFloat f a b =
-        match a, b with
-        | 0.0f, x
-        | x, 0.0f -> x
-        | _ -> f a b
+    let inline private leiArith f (a: 'T) (b: 'T) =
+        if b = LanguagePrimitives.GenericZero<'T> then a else f a b
 
     let private boolIntFun f a b = if f a b then 1 else 0
 
@@ -260,11 +248,11 @@ module Operators =
           { Symbol = "*"
             Precedence = 11
             Assoc = Associativity.Left
-            Map = arithOpCheck (leiArithInt (*)) (leiArithFloat (*)) Mul }
+            Map = arithOpCheck (leiArith (*)) (leiArith (*)) Mul }
           { Symbol = "/"
             Precedence = 12
             Assoc = Associativity.Right
-            Map = arithOpCheck (leiArithInt (/)) (leiArithFloat (/)) Div }
+            Map = arithOpCheck (leiArith (/)) (leiArith (/)) Div }
           { Symbol = "%"; Precedence = 11; Assoc = Associativity.Left; Map = intOpCheck (%) Mod } ]
 
     type UnaryOperatorDetails = { Symbol: string; Precedence: int; Map: Expr -> Expr }
@@ -281,11 +269,7 @@ module Operators =
         { Inner = inner; Type = Type.Int; Category = RValue; IsConst = expr.IsConst }
 
     let private checkNega (expr: Expr) =
-        let ty =
-            match expr.Type with
-            | Type.Int -> Type.Int
-            | Type.Float -> Type.Float
-            | _ -> failwith "Invalid type of operand."
+        if not (expr.Type.IsInt || expr.Type.IsFloat) then failwith "Invalid type of operand."
 
         let inner =
             match expr.Inner with
@@ -293,7 +277,7 @@ module Operators =
             | ExprInner.Float f -> ExprInner.Float -f
             | _ -> Nega expr
 
-        { Inner = inner; Type = ty; Category = RValue; IsConst = expr.IsConst }
+        { Inner = inner; Type = expr.Type; Category = RValue; IsConst = expr.IsConst }
 
     let private checkBitnot (expr: Expr) =
         if not expr.Type.IsInt then failwith "Invalid type of operand."
@@ -355,7 +339,7 @@ let private identifier =
         | None ->
             match searchDef state name with
             | Some(def, handler) ->
-                preturn (
+                let result =
                     match def.Init, def.Type with
                     | Some(ConstInt x), Type.Int -> makeConstInt x
                     | Some(ConstInt x), Type.Float -> makeConstFloat x
@@ -364,7 +348,8 @@ let private identifier =
                     | _, ty when ty.IsInt || ty.IsFloat ->
                         { Inner = Var handler; Type = ty; Category = LValue; IsConst = false }
                     | _, ty -> { Inner = Var handler; Type = ty; Category = RValue; IsConst = false }
-                )
+
+                preturn result
             | None -> fail $"Undefined identifier: `{name}`."
         | Some true ->
             between (ch '(') (ch ')') (sepBy expr (ch ','))
@@ -510,7 +495,7 @@ let private ifElse =
 
 let private whileLoop = keyword "while" >>. condExpr .>>. whileHelper |>> While
 
-module Definitions =
+module private Definitions =
     let private int_ = keyword "int" >>% Type.Int
     let private float_ = keyword "float" >>% Type.Float
     let private void_ = keyword "void" >>% Void
@@ -634,7 +619,7 @@ module Definitions =
         member this.GetList =
             match this with
             | List l -> l
-            | _ -> failwith "Not a list."
+            | _ -> unreachable ()
 
     let private processGenericInitList isList wrap dims initList =
         let totalDepth = List.length dims
@@ -656,7 +641,7 @@ module Definitions =
 
                             match paddedList with
                             | head :: restList -> wrap (insertLeaf (isList head).GetList rest leaf) :: restList
-                            | _ -> failwith "unreachable"
+                            | _ -> unreachable ()
 
                     let newList = insertLeaf list_ (List.tail dimsProd) leaf
                     sum + 1, newList

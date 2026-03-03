@@ -7,7 +7,7 @@
     <PublishSingleFile>true</PublishSingleFile>
     <PublishAot>true</PublishAot>
     <ParallelCompilation>true</ParallelCompilation>
-</PropertyGroup>
+  </PropertyGroup>
 
   <ItemGroup>
     <Compile Include="src/utils.fs" />
