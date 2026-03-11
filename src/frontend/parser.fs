@@ -70,7 +70,7 @@ let private insertDef handler def state =
     state
 
 let private insertDefs handlers defs state =
-    for handler, def in List.zip handlers defs do
+    for handler, def in Seq.zip handlers defs do
         state.SymbolTable.Add(handler, def)
         (List.head state.Blocks).SymbolTable.Add(def.ID, handler)
 
