@@ -53,7 +53,7 @@ let private isGlobal state =
     | _ -> false
 
 let private enterBlock startLoopNow state =
-    let inLoop = if startLoopNow then true else isInLoop state
+    let inLoop = startLoopNow || isInLoop state
     { state with Blocks = { SymbolTable = HashMap(); InLoop = inLoop } :: state.Blocks }
 
 let private enterFuncBody retType state =
@@ -168,7 +168,7 @@ let private literal =
         |>> (single >> makeConstFloat)
 
     let hexFloat =
-        regex @"0[xX](([0-9a-fA-F]*\.[0-9a-fA-F]+)|([0-9a-fA-F]+\.))|([0-9a-fA-F]+)[pP][+-]\d+"
+        regex @"0[xX](([0-9a-fA-F]*\.[0-9a-fA-F]+)|([0-9a-fA-F]+\.?))[pP][+-]?\d+"
         |>> (HexFloat.SingleFromHexString >> makeConstFloat)
 
     let pInt = choiceL [ hexInt; binInt; octInt; decInt ] "integer literal"
@@ -433,7 +433,7 @@ let private identifier =
                     checkPointer indices handler baseType (List.tail dims) None
                 | Some({ Type = Pointer(baseType, dims) }, handler) -> checkPointer indices handler baseType dims None
                 | Some _ -> fail $"`{name}` is not an array or pointer."
-                | None -> fail $"Undefined function: `{name}`."
+                | None -> fail $"Undefined identifier: `{name}`."
 
 let private block, blockRef = createParserForwardedToRef ()
 let private statement, stmtRef = createParserForwardedToRef ()
@@ -516,16 +516,13 @@ module private Definitions =
             | false -> fail "Expecting a constant expression."
 
     let private param =
-        tuple3
-            nonVoidTypes
-            (opt identifierStr)
-            (opt (ch '[' >>. ch ']' >>. many (between (ch '[') (ch ']') posiConstInt)))
-        |>> fun (ty, idOpt, arrDims) ->
+        tuple3 nonVoidTypes identifierStr (opt (ch '[' >>. ch ']' >>. many (between (ch '[') (ch ']') posiConstInt)))
+        |>> fun (ty, id, arrDims) ->
             match arrDims with
-            | Some dims -> Pointer(ty, dims |> List.map uint64), idOpt
-            | None -> ty, idOpt
+            | Some dims -> Pointer(ty, dims |> List.map uint64), id
+            | None -> ty, id
 
-    let private makeFuncDecl newRetType name (newParams: (Type * string option) list) state =
+    let private makeFuncDecl newRetType name (newParams: (Type * string) list) state =
         let parseInitial =
             match searchDef state name with
             | Some(def, _) ->
@@ -547,14 +544,12 @@ module private Definitions =
 
         parseInitial .>> ch ';'
 
-    let private makeFuncDef newRetType name (newParams: (Type * string option) list) state =
+    let private makeFuncDef newRetType name (newParams: (Type * string) list) state =
         let argHandlers = List.init newParams.Length (fun _ -> state.Counter())
 
         let argDefs =
             newParams
-            |> List.map (fun (ty, idOpt) ->
-                let id = Option.defaultValue "" idOpt
-                { Init = None; Type = ty; ID = id; IsGlobal = false; IsArg = true })
+            |> List.map (fun (ty, id) -> { Init = None; Type = ty; ID = id; IsGlobal = false; IsArg = true })
 
         let ty = Type.Function(newRetType, newParams |> List.map fst)
 
@@ -733,7 +728,7 @@ module private Definitions =
 
                 let fullType =
                     match arrDimOpt with
-                    | Some dims -> Array(ty, dims |> List.map uint64)
+                    | Some dims -> Array(ty, dims)
                     | None -> ty
 
                 let handler = state.Counter()

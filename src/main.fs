@@ -16,7 +16,6 @@
 // along with Lui.  If not, see <http://www.gnu.org/licenses/>.
 
 open AST
-type HashMap<'K, 'V> = System.Collections.Generic.Dictionary<'K, 'V>
 
 [<EntryPoint>]
 let main args =
