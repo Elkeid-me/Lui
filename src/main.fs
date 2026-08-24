@@ -16,5 +16,16 @@
 // along with Lui.  If not, see <http://www.gnu.org/licenses/>.
 
 [<EntryPoint>]
-let main _args =
-    0
+let main args =
+    match args with
+    | [| path |] ->
+        match Parser.parse path with
+        | Ok result ->
+            printfn $"Parsed identifier: {result}"
+            0
+        | Error err ->
+            printfn $"Parse error: %A{err}"
+            1
+    | _ ->
+        printfn "Usage: lui <path>"
+        1
