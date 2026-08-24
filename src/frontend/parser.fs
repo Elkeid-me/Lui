@@ -142,7 +142,7 @@ module internal Expression =
           "-", P10, arithOpCheck (-) (-) Sub
 
           "*", P11, arithOpCheck (*) (*) Mul
-          "/", P12, arithOpCheck (/) (/) Div
+          "/", P11, arithOpCheck (/) (/) Div
           "%", P11, intOpCheck (%) Mod ]
 
     let private checkLogicNot _ (expr: Expr) =
