@@ -46,7 +46,7 @@ let private cxxComment =
 let private blockComment =
     skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
 
-let private ws = choice [ cxxComment; blockComment; spaces ]
+let private ws = many (choice [ cxxComment; blockComment; spaces1 ])
 
 module internal Expression =
     /// `ind` 即 Indicator function

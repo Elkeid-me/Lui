@@ -21,10 +21,10 @@ let main args =
     | [| path |] ->
         match Parser.parse path with
         | Ok result ->
-            printfn $"Parsed identifier: {result}"
+            printfn $"Success. Result:\n{result}"
             0
         | Error err ->
-            printfn $"Parse error: %A{err}"
+            printfn $"Error:\n{err}"
             1
     | _ ->
         printfn "Usage: lui <path>"
