@@ -204,7 +204,72 @@ module internal Expression =
         Operator.create ops
 
     let private literal =
-        choice [ pint32 |>> makeConstInt ] .>> ws
+        let cvtInt (base_: int) int_ =
+            if int_ = "" then 0 else System.Convert.ToInt32(int_, base_)
+
+        let binDigit = satisfy (fun c -> c = '0' || c = '1')
+        let octDigit = satisfy (fun c -> c >= '0' && c <= '7')
+        let nonZeroDecDigit = satisfy (fun c -> c >= '1' && c <= '9')
+        let hexDigit = satisfy Char.IsAsciiHexDigit
+
+        let inline intBase pHead pDigits base_ =
+            pHead .>>. pDigits
+            |>> fun struct (head, digits) -> $"{head}{digits}" |> cvtInt base_
+
+        let intHex = intBase (pstring "0x" <|> pstring "0X") (many1Chars hexDigit) 16
+        let intOct = intBase (pchar '0') (manyChars octDigit) 8
+        let intBin = intBase (pstring "0b" <|> pstring "0B") (many1Chars binDigit) 2
+        let intDec = intBase nonZeroDecDigit (manyChars digit) 10
+        let intLiteral = choice [ intHex; intBin; intOct; intDec ] |>> makeConstInt
+
+        let floatLiteral =
+            let inline expBase s =
+                parser {
+                    do! anyOf [ s; Char.ToUpper s ] |>> ignore
+                    let! sign = opt (anyOf [ '+'; '-' ]) |>> ValueOption.defaultValue '+'
+                    let! digits = many1Chars digit
+                    return int $"{sign}{digits}"
+                }
+
+            let floatDecExp = expBase 'e'
+            let floatHexExp = expBase 'p'
+
+            let floatDec1 =
+                let frac =
+                    (tuple3 (manyChars digit) (pchar '.') (many1Chars digit)
+                     |>> fun struct (x, _, y) -> float $"{x}.{y}")
+                    <|> (many1Chars digit .>> pchar '.' |>> float)
+
+                frac .>>. opt floatDecExp
+                |>> fun struct (f, exp) ->
+                    match exp with
+                    | ValueSome e -> f * Double.Exp10(float e)
+                    | ValueNone -> f
+
+            let floatDec2 =
+                many1Chars digit .>>. floatDecExp
+                |>> fun struct (digits, exp) -> float digits * Double.Exp10(float exp)
+
+            let floatHex1 =
+                let frac =
+                    pstring "0x" <|> pstring "0X"
+                    >>. tuple3 (manyChars hexDigit) (pchar '.') (many1Chars hexDigit)
+                    |>> fun struct (x, _, y) ->
+                        float (cvtInt 16 x) + float (cvtInt 16 y) / Double.Exp2(float y.Length * 4.0)
+
+                frac .>>. opt floatHexExp
+                |>> fun struct (f, exp) ->
+                    match exp with
+                    | ValueSome e -> f * Double.Exp2(float e)
+                    | ValueNone -> f
+
+            let floatHex2 =
+                intHex .>>. floatHexExp
+                |>> fun struct (digits, exp) -> float digits * Double.Exp2(float exp)
+
+            choice [ floatHex1; floatHex2; floatDec1; floatDec2 ] |>> makeConstFloat
+
+        choiceL [ floatLiteral; intLiteral ] "一个整数或浮点数" .>> ws
 
     let expr = Operator.parser literal operators
 
