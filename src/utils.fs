@@ -22,7 +22,9 @@ open System.Runtime.CompilerServices
 type private Impl =
     static member panic(?message: string, [<CallerFilePath>] ?file: string, [<CallerLineNumber>] ?line: int) =
         let message = defaultArg message "Unknown error."
-        printfn "\"%s\" happened at file %s, line %d" message (defaultArg file "unknown") (defaultArg line 0)
+        let file = defaultArg file "unknown"
+        let line = defaultArg line 0
+        printfn $"\"{message}\" happened at file {file}, line {line}"
         exit 1
 
 let unreachable () = Impl.panic "Unreachable code."
