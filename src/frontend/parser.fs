@@ -46,9 +46,9 @@ let private cxxComment =
 let private blockComment =
     skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
 
-let private ws = many (choice [ cxxComment; blockComment; spaces1 ])
+let private ws = skipMany (choice [ cxxComment; blockComment; spaces1 ])
 
-module internal Expression =
+module internal Expressions =
     /// `ind` 即 Indicator function
     let inline private ind f (a: ^T) (b: ^T) = if f a b then 1 else 0
 
@@ -227,56 +227,42 @@ module internal Expression =
             pHead .>>. pDigits
             |>> fun struct (head, digits) -> $"{head}{digits}" |> cvtInt base_
 
-        let intHex = intBase (pstring "0x" <|> pstring "0X") (many1Chars hexDigit) 16
+        let inline intHead s = pstring s <|> pstring (s.ToUpper())
+        let intHex = intBase (intHead "0x") (many1Chars hexDigit) 16
         let intOct = intBase (pchar '0') (manyChars octDigit) 8
-        let intBin = intBase (pstring "0b" <|> pstring "0B") (many1Chars binDigit) 2
+        let intBin = intBase (intHead "0b") (many1Chars binDigit) 2
         let intDec = intBase nonZeroDecDigit (manyChars digit) 10
         let intLiteral = choice [ intHex; intBin; intOct; intDec ] |>> makeConstInt
 
         let floatLiteral =
             let inline expBase s =
-                parser {
-                    do! anyOf [ s; Char.ToUpper s ] |>> ignore
-                    let! sign = opt (anyOf [ '+'; '-' ]) |>> ValueOption.defaultValue '+'
-                    let! digits = many1Chars digit
-                    return int $"{sign}{digits}"
-                }
+                skipAnyOf [ s; Char.ToUpper s ] >>. opt (anyOf [ '+'; '-' ])
+                .>>. many1Chars digit
+                |>> fun struct (sign, digits) -> if sign = ValueSome '-' then -float digits else float digits
 
-            let floatDecExp = expBase 'e'
-            let floatHexExp = expBase 'p'
+            let floatDecExp = expBase 'e' |>> Double.Exp10
+            let floatHexExp = expBase 'p' |>> Double.Exp2
+
+            let inline float1Base frac exp =
+                pipe2 frac (opt exp |>> ValueOption.defaultValue 1.0) (*)
 
             let floatDec1 =
-                let frac =
-                    (tuple3 (manyChars digit) (pchar '.') (many1Chars digit)
-                     |>> fun struct (x, _, y) -> float $"{x}.{y}")
-                    <|> (many1Chars digit .>> pchar '.' |>> float)
-
-                frac .>>. opt floatDecExp
-                |>> fun struct (f, exp) ->
-                    match exp with
-                    | ValueSome e -> f * Double.Exp10(float e)
-                    | ValueNone -> f
-
-            let floatDec2 =
-                many1Chars digit .>>. floatDecExp
-                |>> fun struct (digits, exp) -> float digits * Double.Exp10(float exp)
+                float1Base
+                    (manyChars digit .>> skipChar '.' .>>. many1Chars digit
+                     |>> (fun struct (x, y) -> float $"{x}.{y}")
+                     <|> (many1Chars digit .>> skipChar '.' |>> float))
+                    floatDecExp
 
             let floatHex1 =
-                let frac =
-                    pstring "0x" <|> pstring "0X"
-                    >>. tuple3 (manyChars hexDigit) (pchar '.') (many1Chars hexDigit)
-                    |>> fun struct (x, _, y) ->
-                        float (cvtInt 16 x) + float (cvtInt 16 y) / Double.Exp2(float y.Length * 4.0)
+                float1Base
+                    (intHead "0x" >>. manyChars hexDigit .>> skipChar '.' .>>. many1Chars hexDigit
+                     |>> fun struct (x, y) ->
+                         float (cvtInt 16 x) + float (cvtInt 16 y) / Double.Exp2(float y.Length * 4.0))
+                    floatHexExp
 
-                frac .>>. opt floatHexExp
-                |>> fun struct (f, exp) ->
-                    match exp with
-                    | ValueSome e -> f * Double.Exp2(float e)
-                    | ValueNone -> f
-
-            let floatHex2 =
-                intHex .>>. floatHexExp
-                |>> fun struct (digits, exp) -> float digits * Double.Exp2(float exp)
+            let inline float2Base pHead pDigits = pipe2 (pHead |>> float) pDigits (*)
+            let floatDec2 = float2Base (many1Chars digit) floatDecExp
+            let floatHex2 = float2Base intHex floatHexExp
 
             choice [ floatHex1; floatHex2; floatDec1; floatDec2 ] |>> makeConstFloat
 
@@ -286,4 +272,4 @@ module internal Expression =
 
 let parse path =
     let reader = Reader.ofString (IO.File.ReadAllText(path, Text.Encoding.UTF8)) ()
-    Expression.expr reader
+    Expressions.expr reader
