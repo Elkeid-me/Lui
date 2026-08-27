@@ -50,7 +50,7 @@ let private ws = many (choice [ cxxComment; blockComment; spaces1 ])
 
 module internal Expression =
     /// `ind` 即 Indicator function
-    let inline private ind f (a: 'T) (b: 'T) = if f a b then 1 else 0
+    let inline private ind f (a: ^T) (b: ^T) = if f a b then 1 else 0
 
     let inline private checkType argMustInt ty (l: Expr) (r: Expr) =
         match l.Type, r.Type with
@@ -60,7 +60,18 @@ module internal Expression =
         | Type.Float, Type.Float when not argMustInt -> ty
         | _ -> failwith "Invalid type of operands."
 
-    let inline private binaryOpCheck argMustInt ty fun1 fun2 fun3 fun4 constructor (l: Expr) _ (r: Expr) =
+    let inline private binaryOpCheck
+        argMustInt
+        ty
+        ([<InlineIfLambda>] fun1)
+        ([<InlineIfLambda>] fun2)
+        ([<InlineIfLambda>] fun3)
+        ([<InlineIfLambda>] fun4)
+        constructor
+        (l: Expr)
+        _
+        (r: Expr)
+        =
         let ty = checkType argMustInt ty l r
 
         let inner =
