@@ -20,7 +20,7 @@ let main args =
     match args with
     | [| path |] ->
         match Parser.parse path with
-        | Ok result ->
+        | Ok (_, result) ->
             printfn $"Success. Result:\n{result}"
             0
         | Error err ->

@@ -27,12 +27,12 @@ type Type =
     | Array of Type * uint64
     | Function of Type * Type list
 
-let rec typeCastable typeL typeR =
-    match typeL, typeR with
+let rec typeCastable typeFrom typeTo =
+    match typeFrom, typeTo with
     | Int, Int
     | Int, Float
     | Float, Int -> true
-    | Pointer baseL, Pointer baseR -> typeCastable baseL baseR
+    | Pointer baseFrom, Pointer baseTo -> typeCastable baseFrom baseTo
     | Array(baseA, _), Pointer baseP -> baseA = baseP
     | _ -> false
 
@@ -41,27 +41,27 @@ type ValueCategory =
     | RValue
 
 type ExprInner =
-    | Mul of Expr * Expr
-    | Div of Expr * Expr
-    | Mod of Expr * Expr
-    | Add of Expr * Expr
-    | Sub of Expr * Expr
+    | Mul of struct (Expr * Expr)
+    | Div of struct (Expr * Expr)
+    | Mod of struct (Expr * Expr)
+    | Add of struct (Expr * Expr)
+    | Sub of struct (Expr * Expr)
 
-    | ShL of Expr * Expr
-    | SaR of Expr * Expr
-    | Xor of Expr * Expr
-    | And of Expr * Expr
-    | Or of Expr * Expr
+    | ShL of struct (Expr * Expr)
+    | SaR of struct (Expr * Expr)
+    | Xor of struct (Expr * Expr)
+    | And of struct (Expr * Expr)
+    | Or of struct (Expr * Expr)
 
-    | Eq of Expr * Expr
-    | Neq of Expr * Expr
-    | Grt of Expr * Expr
-    | Geq of Expr * Expr
-    | Les of Expr * Expr
-    | Leq of Expr * Expr
+    | Eq of struct (Expr * Expr)
+    | Neq of struct (Expr * Expr)
+    | Grt of struct (Expr * Expr)
+    | Geq of struct (Expr * Expr)
+    | Les of struct (Expr * Expr)
+    | Leq of struct (Expr * Expr)
 
-    | LogicAnd of Expr * Expr
-    | LogicOr of Expr * Expr
+    | LogicAnd of struct (Expr * Expr)
+    | LogicOr of struct (Expr * Expr)
 
     | LogicNot of Expr
     | Neg of Expr
@@ -72,17 +72,17 @@ type ExprInner =
     | PreInc of Expr
     | PreDec of Expr
 
-    | Assignment of Expr * Expr
-    | AddAssign of Expr * Expr
-    | SubAssign of Expr * Expr
-    | MulAssign of Expr * Expr
-    | DivAssign of Expr * Expr
-    | ModAssign of Expr * Expr
-    | AndAssign of Expr * Expr
-    | OrAssign of Expr * Expr
-    | XorAssign of Expr * Expr
-    | ShLAssign of Expr * Expr
-    | SaRAssign of Expr * Expr
+    | Assignment of struct (Expr * Expr)
+    | AddAssign of struct (Expr * Expr)
+    | SubAssign of struct (Expr * Expr)
+    | MulAssign of struct (Expr * Expr)
+    | DivAssign of struct (Expr * Expr)
+    | ModAssign of struct (Expr * Expr)
+    | AndAssign of struct (Expr * Expr)
+    | OrAssign of struct (Expr * Expr)
+    | XorAssign of struct (Expr * Expr)
+    | ShLAssign of struct (Expr * Expr)
+    | SaRAssign of struct (Expr * Expr)
 
     | Int of int
     | Float of single
@@ -94,9 +94,9 @@ and Expr = { Inner: ExprInner; Type: Type; Category: ValueCategory; IsConst: boo
 
 type Statement =
     | Expr of Expr
-    | If of Expr * Block * Block
-    | While of Expr * Block
-    | Return of Expr option
+    | If of struct (Expr * Block * Block)
+    | While of struct (Expr * Block)
+    | Return of Expr voption
     | Break
     | Continue
     | Empty
@@ -106,7 +106,7 @@ and BlockItem =
     | Def of Handler list
     | Block of Block
 
-and Block = BlockItem list
+and Block = System.Collections.Immutable.ImmutableArray<BlockItem>
 
 type FunctionInfo = { Block: Block; ArgHandlers: Handler list }
 
@@ -121,6 +121,6 @@ type Init =
     | Expr of Expr
     | List of InitList
 
-type Definition = { Init: Init option; Type: Type; ID: string; IsGlobal: bool; IsArg: bool; IsConst: bool }
-
-type TranslationUnit = { Ast: Handler list; SymbolTable: Map<Handler, Definition> }
+type Definition = { Init: Init voption; Type: Type; ID: string; IsGlobal: bool; IsArg: bool; IsConst: bool }
+type SymbolTableType = Map<Handler, Definition>
+type TranslationUnit = { Ast: Handler list; SymbolTable: SymbolTableType }

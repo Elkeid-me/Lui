@@ -19,11 +19,87 @@ module Parser
 
 open AST
 open System
+open System.Collections.Immutable
 open Utils
 open XParsec
 open XParsec.CharParsers
 open XParsec.OperatorParsing
 open XParsec.Parsers
+
+let private createCounter (init: uint32) =
+    let mutable count = init
+
+    fun () ->
+        count <- count + 1u
+        count
+
+let private counter = createCounter 0u
+
+// 使用 `Map` 而不是 `HashMap`，保持纯函数式，避免在解析过程中出现副作用。
+type BlockInfo = { SymbolTable: Map<string, Handler>; InLoop: bool }
+
+/// - `Counter`: 生成唯一标识符的计数器。
+/// - `SymbolTable`: 全局的符号表，存储 `Handler` 到 `Definition` 的映射。
+/// - `RetType`: 当前函数的返回类型。
+/// - `Blocks`: 当前作用域栈，每个作用域包含一个符号表和是否在循环内的信息。
+/// - `ParsingType`: 当前正在解析的基础类型（用于处理类型声明）。
+///
+///   注意，解析数组声明时，仍然使用数组元素类型作为 `ParsingType`。
+type Context =
+    { SymbolTable: SymbolTableType // 符号表，存储解析至今的所有局部、全局定义或声明。
+      RetType: AST.Type
+      Blocks: BlockInfo list
+      ParsingType: AST.Type }
+
+let inline private isInLoop context = (List.head context.Blocks).InLoop
+
+let inline private isGlobal context =
+    match context.Blocks with
+    | [ _ ] -> true
+    | _ -> false
+
+let inline private enterBlock startLoopNow context =
+    let inLoop = startLoopNow || isInLoop context
+    { context with Blocks = { SymbolTable = Map.empty; InLoop = inLoop } :: context.Blocks }
+
+let inline private enterFuncBody retType context =
+    { context with RetType = retType; Blocks = { SymbolTable = Map.empty; InLoop = false } :: context.Blocks }
+
+let inline private exitBlock context =
+    { context with Blocks = List.tail context.Blocks }
+
+let inline private insertDef handler def context =
+    let newSymbolTable = Map.add handler def context.SymbolTable
+    let currentBlock = List.head context.Blocks
+
+    let updatedBlock =
+        { currentBlock with SymbolTable = Map.add def.ID handler currentBlock.SymbolTable }
+
+    { context with SymbolTable = newSymbolTable; Blocks = updatedBlock :: List.tail context.Blocks }
+
+let inline private insertDefs handlers defs context =
+    let newSymbolTable =
+        (handlers, defs)
+        ||> Seq.zip
+        |> Seq.fold (fun symbolTable (handler, def) -> Map.add handler def symbolTable) context.SymbolTable
+
+    let currentBlock = List.head context.Blocks
+
+    let newCurrentSymbolTable =
+        (defs, handlers)
+        ||> Seq.zip
+        |> Seq.fold (fun symbolTable (def, handler) -> Map.add def.ID handler symbolTable) currentBlock.SymbolTable
+
+    let updatedBlock = { currentBlock with SymbolTable = newCurrentSymbolTable }
+
+    { context with SymbolTable = newSymbolTable; Blocks = updatedBlock :: List.tail context.Blocks }
+
+let inline private searchDef context identifier =
+    context.Blocks
+    |> List.tryFind (fun block -> Map.containsKey identifier block.SymbolTable)
+    |> Option.map (fun block ->
+        let handler = block.SymbolTable.[identifier]
+        context.SymbolTable.[handler], handler)
 
 let inline private makeConstInt (x: ^T) =
     { Inner = Int(int x); Type = Type.Int; Category = RValue; IsConst = true }
@@ -31,11 +107,20 @@ let inline private makeConstInt (x: ^T) =
 let inline private makeConstFloat (x: ^T) =
     { Inner = Float(single x); Type = Type.Float; Category = RValue; IsConst = true }
 
+let private createParserRef () =
+    let dummyParser =
+        fun _ -> Impl.panic "A parser created by createParserRef was not initialized"
+
+    let r = ref dummyParser
+    (fun stream -> r.Value stream), r
+
+let inline private failParser message = fail (Message message)
+let inline private isIdentStartChar c = Char.IsLetter c || c = '_'
+let inline private isIdentChar c = Char.IsLetterOrDigit c || c = '_'
+
 // let private pIdentifier =
-//     let isIdentStartChar c = Char.IsLetter c || c = '_'
-//     let isIdentChar c = Char.IsLetterOrDigit c || c = '_'
-//     let pIdentStartChar = satisfyL isIdentStartChar "一个字母或下划线"
-//     let pIdentChar = satisfyL isIdentChar "一个字母、数字或下划线"
+//     let pIdentStartChar = satisfy isIdentStartChar
+//     let pIdentChar = satisfy isIdentChar
 //     many1Chars2 pIdentStartChar pIdentChar
 
 let private skipString s = pstring s >>% ()
@@ -47,8 +132,9 @@ let private blockComment =
     skipString "/*" .>> manyCharsTill anyChar (skipString "*/")
 
 let private ws = skipMany (choice [ cxxComment; blockComment; spaces1 ])
+let private ch c = skipChar c .>> ws
 
-module internal Expressions =
+module private Expressions =
     /// `ind` 即 Indicator function
     let inline private ind f (a: ^T) (b: ^T) = if f a b then 1 else 0
 
@@ -80,7 +166,7 @@ module internal Expressions =
             | Float l, Int r when not argMustInt -> fun2 l r
             | Int l, Float r when not argMustInt -> fun3 l r
             | Float l, Float r when not argMustInt -> fun4 l r
-            | _ -> constructor (l, r)
+            | _ -> constructor struct (l, r)
 
         { Inner = inner; Type = ty; Category = RValue; IsConst = l.IsConst && r.IsConst }
 
@@ -109,7 +195,7 @@ module internal Expressions =
     let inline private assignOpCheckBase mustInt constructor (l: Expr) _ (r: Expr) =
         if l.Category <> LValue then failwith "R-value on the left hand side of assign operator."
         let ty = checkType mustInt (if mustInt then l.Type else Type.Int) l r
-        { Inner = constructor (l, r); Type = ty; Category = LValue; IsConst = false }
+        { Inner = constructor struct (l, r); Type = ty; Category = LValue; IsConst = false }
 
     let private assignOpCheck = assignOpCheckBase false
     let private intAssignOpCheck = assignOpCheckBase true
@@ -200,7 +286,7 @@ module internal Expressions =
     let private makeRightAssocInfixOp = makeOpBase Operator.infixRightAssoc
     let private makePrefixOp = makeOpBase Operator.prefix
 
-    let private operators: Operators<string, unit, Expr, char, unit, ReadableString> =
+    let private operators: Operators<string, unit, Expr, char, Context, ReadableString> =
         let brackets =
             Operator.enclosedBy "(" ")" P30 (op "(") (op ")") (fun _ expr _ -> expr)
 
@@ -215,17 +301,17 @@ module internal Expressions =
         Operator.create ops
 
     let private literal =
-        let cvtInt (base_: int) int_ =
-            if int_ = "" then 0 else System.Convert.ToInt32(int_, base_)
+        let cvtInt (fromBase: int) value =
+            if value = "" then 0 else Convert.ToInt32(value, fromBase)
 
         let binDigit = satisfy (fun c -> c = '0' || c = '1')
         let octDigit = satisfy (fun c -> c >= '0' && c <= '7')
         let nonZeroDecDigit = satisfy (fun c -> c >= '1' && c <= '9')
         let hexDigit = satisfy Char.IsAsciiHexDigit
 
-        let inline intBase pHead pDigits base_ =
+        let inline intBase pHead pDigits fromBase =
             pHead .>>. pDigits
-            |>> fun struct (head, digits) -> $"{head}{digits}" |> cvtInt base_
+            |>> fun struct (head, digits) -> $"{head}{digits}" |> cvtInt fromBase
 
         let inline intHead s = pstring s <|> pstring (s.ToUpper())
         let intHex = intBase (intHead "0x") (many1Chars hexDigit) 16
@@ -263,13 +349,122 @@ module internal Expressions =
             let inline float2Base pHead pDigits = pipe2 (pHead |>> float) pDigits (*)
             let floatDec2 = float2Base (many1Chars digit) floatDecExp
             let floatHex2 = float2Base intHex floatHexExp
-
             choice [ floatHex1; floatHex2; floatDec1; floatDec2 ] |>> makeConstFloat
 
         choiceL [ floatLiteral; intLiteral ] "一个整数或浮点数" .>> ws
 
-    let expr = Operator.parser literal operators
+    let expr = Operator.parser literal operators .>> ws
+
+open Expressions
+
+let inline private keyword s =
+    pstring s .>> notFollowedBy (satisfy isIdentChar) .>> ws
+
+let inline private breakContinueBase keyword_ ret =
+    keyword keyword_ .>> ch ';' >>. userStateSatisfies isInLoop >>% ret
+    <?> $"`{keyword_}` statement must be used in loop."
+
+let private break_ = breakContinueBase "break" Break
+let private continue_ = breakContinueBase "continue" Continue
+
+let private return_ =
+    let checkExpr context (expr: Expr) =
+        match typeCastable expr.Type context.RetType with
+        | true -> preturn (ValueSome expr)
+        | false -> failParser "Return expression type mismatch."
+
+    keyword "return" >>. getUserState
+    >>= function
+        | { RetType = Void } -> ch ';' >>% Return ValueNone
+        | context -> expr .>> ch ';' >>= checkExpr context |>> Return
+
+let private block, private blockRef = createParserRef ()
+let private statement, private stmtRef = createParserRef ()
+let private blockItem, private blockItemRef = createParserRef ()
+
+let private manyBlockItem =
+    let filter =
+        function
+        | Statement Statement.Empty -> false
+        | _ -> true
+
+    let builder = Seq.filter filter >> ImmutableArray.CreateRange
+    many blockItem |>> builder
+
+let private blockWithoutScope = between (ch '{') (ch '}') manyBlockItem
+
+let private ifWhileHelper startLoopNow =
+    between
+        (updateUserState (enterBlock startLoopNow))
+        (updateUserState exitBlock)
+        (choice [ blockWithoutScope; statement |>> (Statement >> ImmutableArray.Create) ])
+
+let private ifHelper = ifWhileHelper false
+let private whileHelper = ifWhileHelper true
+
+let private arithExpr =
+    expr
+    >>= function
+        | { Type = Type.Int | Type.Float } as expr -> preturn expr
+        | _ -> failParser "Expecting an expression of type `int` or `float`."
+
+let private condExpr = between (ch '(') (ch ')') arithExpr
+
+let private ifElse =
+    tuple3
+        (keyword "if" >>. condExpr)
+        ifHelper
+        (opt (keyword "else" >>. ifHelper)
+         |>> ValueOption.defaultValue ImmutableArray.Empty)
+    |>> If
+
+let private whileLoop = keyword "while" >>. condExpr .>>. whileHelper |>> While
+
+// 必须先 `ch '{'`，再更新 `context`
+blockRef.Value <-
+    between (ch '{' >>. updateUserState (enterBlock false)) (ch '}' >>. updateUserState exitBlock) manyBlockItem
+
+stmtRef.Value <-
+    let exprStmt = expr .>> ch ';' |>> Statement.Expr
+    let emptyStmt = ch ';' >>% Statement.Empty
+    choice [ whileLoop; ifElse; continue_; break_; return_; exprStmt; emptyStmt ]
+
+blockItemRef.Value <- choice [ block |>> AST.Block; statement |>> Statement ]
 
 let parse path =
-    let reader = Reader.ofString (IO.File.ReadAllText(path, Text.Encoding.UTF8)) ()
-    Expressions.expr reader
+    let sysyLib =
+        [ Type.Function(Type.Int, []), "getint"
+          Type.Function(Type.Int, []), "getch"
+          Type.Function(Type.Float, []), "getfloat"
+          Type.Function(Type.Int, [ Pointer Type.Int ]), "getarray"
+          Type.Function(Type.Int, [ Pointer Type.Float ]), "getfarray"
+          Type.Function(Type.Void, [ Type.Int ]), "putint"
+          Type.Function(Type.Void, [ Type.Int ]), "putch"
+          Type.Function(Type.Void, [ Type.Float ]), "putfloat"
+          Type.Function(Type.Void, [ Type.Int; Pointer Type.Int ]), "putarray"
+          Type.Function(Type.Void, [ Type.Int; Pointer Type.Float ]), "putfarray" ]
+
+    let handlers = List.init (List.length sysyLib) (fun _ -> counter ())
+
+    let globalSymbolTable =
+        sysyLib
+        |> Seq.map (fun (ty, name) ->
+            { Init = ValueNone; Type = ty; ID = name; IsConst = false; IsArg = false; IsGlobal = true })
+        |> Seq.zip handlers
+        |> Map.ofSeq
+
+    let symbolTable = Seq.zip (Seq.map snd sysyLib) handlers |> Map.ofSeq
+
+    let reader =
+        Reader.ofString
+            (IO.File.ReadAllText(path, Text.Encoding.UTF8))
+            { SymbolTable = globalSymbolTable
+              RetType = Type.Void
+              ParsingType = Type.Int
+              Blocks = [ { SymbolTable = symbolTable; InLoop = false } ] }
+
+    let parser = ws >>. expr .>> eof .>>. getUserState
+
+    match parser reader with
+    | Ok(expr, context) -> Ok({ Ast = []; SymbolTable = context.SymbolTable }, expr)
+    | Error err -> Error $"Parse error: {err}"

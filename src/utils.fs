@@ -19,7 +19,7 @@ module Utils
 
 open System.Runtime.CompilerServices
 
-type private Impl =
+type Impl =
     static member panic(?message: string, [<CallerFilePath>] ?file: string, [<CallerLineNumber>] ?line: int) =
         let message = defaultArg message "Unknown error."
         let file = defaultArg file "unknown"
@@ -28,5 +28,4 @@ type private Impl =
         exit 1
 
 let unreachable () = Impl.panic "Unreachable code."
-
 let todo () = Impl.panic "Not implemented."
