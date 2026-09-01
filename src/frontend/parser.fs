@@ -112,17 +112,12 @@ let private createParserRef () =
         fun _ -> Impl.panic "A parser created by createParserRef was not initialized"
 
     let r = ref dummyParser
-    (fun stream -> r.Value stream), r
+    let inline p stream = r.Value stream
+    p, r
 
 let inline private failParser message = fail (Message message)
 let inline private isIdentStartChar c = Char.IsLetter c || c = '_'
 let inline private isIdentChar c = Char.IsLetterOrDigit c || c = '_'
-
-// let private pIdentifier =
-//     let pIdentStartChar = satisfy isIdentStartChar
-//     let pIdentChar = satisfy isIdentChar
-//     many1Chars2 pIdentStartChar pIdentChar
-
 let private skipString s = pstring s >>% ()
 
 let private cxxComment =
@@ -133,6 +128,11 @@ let private blockComment =
 
 let private ws = skipMany (choice [ cxxComment; blockComment; spaces1 ])
 let private ch c = skipChar c .>> ws
+
+let private pIdentifier =
+    let pIdentStartChar = satisfy isIdentStartChar
+    let pIdentChar = satisfy isIdentChar
+    many1Chars2 pIdentStartChar pIdentChar .>> ws
 
 module private Expressions =
     /// `ind` 即 Indicator function
@@ -280,7 +280,7 @@ module private Expressions =
           "-", P12, checkNeg
           "~", P12, checkNot ]
 
-    let inline private op s = pstring s .>> ws >>% s
+    let inline private op s = pstring s .>> ws
     let inline private makeOpBase con (symbol, prec: Precedence, map: ^T) = con symbol prec (op symbol) map
     let private makeLeftAssocInfixOp = makeOpBase Operator.infixLeftAssoc
     let private makeRightAssocInfixOp = makeOpBase Operator.infixRightAssoc
@@ -309,20 +309,20 @@ module private Expressions =
         let nonZeroDecDigit = satisfy (fun c -> c >= '1' && c <= '9')
         let hexDigit = satisfy Char.IsAsciiHexDigit
 
-        let inline intBase pHead pDigits fromBase =
-            pHead .>>. pDigits
-            |>> fun struct (head, digits) -> $"{head}{digits}" |> cvtInt fromBase
+        let inline intBase pPrefix pDigits fromBase =
+            pPrefix .>>. pDigits
+            |>> fun struct (prefix, digits) -> $"{prefix}{digits}" |> cvtInt fromBase
 
-        let inline intHead s = pstring s <|> pstring (s.ToUpper())
-        let intHex = intBase (intHead "0x") (many1Chars hexDigit) 16
+        let inline intPrefix s = pstring s <|> pstring (s.ToUpper())
+        let intHex = intBase (intPrefix "0x") (many1Chars hexDigit) 16
         let intOct = intBase (pchar '0') (manyChars octDigit) 8
-        let intBin = intBase (intHead "0b") (many1Chars binDigit) 2
+        let intBin = intBase (intPrefix "0b") (many1Chars binDigit) 2
         let intDec = intBase nonZeroDecDigit (manyChars digit) 10
         let intLiteral = choice [ intHex; intBin; intOct; intDec ] |>> makeConstInt
 
         let floatLiteral =
-            let inline expBase s =
-                skipAnyOf [ s; Char.ToUpper s ] >>. opt (anyOf [ '+'; '-' ])
+            let inline expBase expInd =
+                anyOf [ expInd; Char.ToUpper expInd ] >>. opt (anyOf [ '+'; '-' ])
                 .>>. many1Chars digit
                 |>> fun struct (sign, digits) -> if sign = ValueSome '-' then -float digits else float digits
 
@@ -341,7 +341,7 @@ module private Expressions =
 
             let floatHex1 =
                 float1Base
-                    (intHead "0x" >>. manyChars hexDigit .>> skipChar '.' .>>. many1Chars hexDigit
+                    (intPrefix "0x" >>. manyChars hexDigit .>> skipChar '.' .>>. many1Chars hexDigit
                      |>> fun struct (x, y) ->
                          float (cvtInt 16 x) + float (cvtInt 16 y) / Double.Exp2(float y.Length * 4.0))
                     floatHexExp
@@ -351,14 +351,53 @@ module private Expressions =
             let floatHex2 = float2Base intHex floatHexExp
             choice [ floatHex1; floatHex2; floatDec1; floatDec2 ] |>> makeConstFloat
 
-        choiceL [ floatLiteral; intLiteral ] "一个整数或浮点数" .>> ws
+        choice [ floatLiteral; intLiteral ] .>> ws
 
-    let expr = Operator.parser literal operators .>> ws
+    let private identifier =
+        pIdentifier .>>. getUserState
+        >>= fun struct (id, context) ->
+            match searchDef context id with
+            | Some(def, handler) ->
+                preturn { Inner = Var handler; Type = def.Type; Category = LValue; IsConst = def.IsConst }
+            | None -> failParser $"Undefined identifier: {id}"
+
+    let expr, private exprRef = createParserRef ()
+
+    let private arrayAccess =
+        let intExpr =
+            expr
+            >>= function
+                | { Expr.Type = Type.Int } as expr -> preturn expr
+                | _ -> failParser "Expecting an expression of type `int`."
+        // let inline checkPointer indices handler baseType dims init =
+
+        pIdentifier .>>. many1 (between (ch '[') (ch ']') intExpr)
+
+    let private functionCall =
+        tuple3 pIdentifier (between (ch '(') (ch ')') (sepBy expr (ch ','))) getUserState
+        >>= fun struct (id, args, context) ->
+            let struct (args, _) = args
+
+            match searchDef context id with
+            | Some(def, handler) ->
+                match def.Type with
+                | Type.Function(retType, paramTypes) ->
+                    if paramTypes.Length <> args.Length then
+                        failParser $"Function `{id}` expects {paramTypes.Length} arguments, but got {args.Length}."
+                    else if not (Seq.forall2 typeCastable (args |> Seq.map _.Type) paramTypes) then
+                        failParser $"Function `{id}` argument type mismatch."
+                    else
+                        preturn { Inner = AST.Func(handler, args); Type = retType; Category = RValue; IsConst = false }
+                | _ -> failParser $"`{id}` is not a function."
+            | None -> failParser $"Undefined identifier: {id}"
+
+    let private pAtom = choice [ identifier; literal ]
+    exprRef.Value <- Operator.parser pAtom operators
 
 open Expressions
 
-let inline private keyword s =
-    pstring s .>> notFollowedBy (satisfy isIdentChar) .>> ws
+let inline private keyword keyword_ =
+    pstring keyword_ .>> notFollowedBy (satisfy isIdentChar) .>> ws
 
 let inline private breakContinueBase keyword_ ret =
     keyword keyword_ .>> ch ';' >>. userStateSatisfies isInLoop >>% ret
@@ -433,16 +472,16 @@ blockItemRef.Value <- choice [ block |>> AST.Block; statement |>> Statement ]
 
 let parse path =
     let sysyLib =
-        [ Type.Function(Type.Int, []), "getint"
-          Type.Function(Type.Int, []), "getch"
-          Type.Function(Type.Float, []), "getfloat"
-          Type.Function(Type.Int, [ Pointer Type.Int ]), "getarray"
-          Type.Function(Type.Int, [ Pointer Type.Float ]), "getfarray"
-          Type.Function(Type.Void, [ Type.Int ]), "putint"
-          Type.Function(Type.Void, [ Type.Int ]), "putch"
-          Type.Function(Type.Void, [ Type.Float ]), "putfloat"
-          Type.Function(Type.Void, [ Type.Int; Pointer Type.Int ]), "putarray"
-          Type.Function(Type.Void, [ Type.Int; Pointer Type.Float ]), "putfarray" ]
+        [ Type.Function(Type.Int, ImmutableArray.Empty), "getint"
+          Type.Function(Type.Int, ImmutableArray.Empty), "getch"
+          Type.Function(Type.Float, ImmutableArray.Empty), "getfloat"
+          Type.Function(Type.Int, ImmutableArray.CreateRange [ Pointer Type.Int ]), "getarray"
+          Type.Function(Type.Int, ImmutableArray.CreateRange [ Pointer Type.Float ]), "getfarray"
+          Type.Function(Type.Void, ImmutableArray.CreateRange [ Type.Int ]), "putint"
+          Type.Function(Type.Void, ImmutableArray.CreateRange [ Type.Int ]), "putch"
+          Type.Function(Type.Void, ImmutableArray.CreateRange [ Type.Float ]), "putfloat"
+          Type.Function(Type.Void, ImmutableArray.CreateRange [ Type.Int; Pointer Type.Int ]), "putarray"
+          Type.Function(Type.Void, ImmutableArray.CreateRange [ Type.Int; Pointer Type.Float ]), "putfarray" ]
 
     let handlers = List.init (List.length sysyLib) (fun _ -> counter ())
 
@@ -468,3 +507,24 @@ let parse path =
     match parser reader with
     | Ok(expr, context) -> Ok({ Ast = []; SymbolTable = context.SymbolTable }, expr)
     | Error err -> Error $"Parse error: {err}"
+
+
+module private Definitions =
+    let private int_ = keyword "int" >>% Type.Int
+    let private float_ = keyword "float" >>% Type.Float
+    let private void_ = keyword "void" >>% Type.Void
+    let private type_ = choiceL [ int_; float_; void_ ] "a type."
+    let private nonVoidType = choiceL [ int_; float_ ] "a non-void type."
+
+    // 正整数常量表达式，用于数组维度等场景。
+    let private posiConstInt =
+        expr
+        >>= function
+            | { Inner = Int i } when i > 0 -> preturn i
+            | _ -> failParser "Expecting a positive integer constant."
+
+    let private constExpr =
+        expr
+        >>= function
+            | { IsConst = true } as e -> preturn e
+            | _ -> failParser "Expecting a constant expression."

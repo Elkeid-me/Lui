@@ -17,6 +17,8 @@
 
 module AST
 
+open System.Collections.Immutable
+
 type Handler = uint
 
 type Type =
@@ -25,7 +27,7 @@ type Type =
     | Void
     | Pointer of Type
     | Array of Type * uint64
-    | Function of Type * Type list
+    | Function of Type * ImmutableArray<Type>
 
 let rec typeCastable typeFrom typeTo =
     match typeFrom, typeTo with
@@ -87,8 +89,8 @@ type ExprInner =
     | Int of int
     | Float of single
     | Var of Handler
-    | Func of Handler * Expr list
-    | ArrayElem of Handler * Expr list
+    | Func of Handler * ImmutableArray<Expr>
+    | ArrayElem of Handler * ImmutableArray<Expr>
 
 and Expr = { Inner: ExprInner; Type: Type; Category: ValueCategory; IsConst: bool }
 
@@ -106,7 +108,7 @@ and BlockItem =
     | Def of Handler list
     | Block of Block
 
-and Block = System.Collections.Immutable.ImmutableArray<BlockItem>
+and Block = ImmutableArray<BlockItem>
 
 type FunctionInfo = { Block: Block; ArgHandlers: Handler list }
 
