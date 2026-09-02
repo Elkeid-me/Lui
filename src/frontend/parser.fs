@@ -400,7 +400,7 @@ let inline private keyword keyword_ =
     pstring keyword_ .>> notFollowedBy (satisfy isIdentChar) .>> ws
 
 let inline private breakContinueBase keyword_ ret =
-    keyword keyword_ .>> ch ';' >>. userStateSatisfies isInLoop >>% ret
+    keyword keyword_ >>. ch ';' >>. userStateSatisfies isInLoop >>% ret
     <?> $"`{keyword_}` statement must be used in loop."
 
 let private break_ = breakContinueBase "break" Break
@@ -468,6 +468,25 @@ stmtRef.Value <-
     let emptyStmt = ch ';' >>% Statement.Empty
     choice [ whileLoop; ifElse; continue_; break_; return_; exprStmt; emptyStmt ]
 
+module private Definitions =
+    let private int_ = keyword "int" >>% Type.Int
+    let private float_ = keyword "float" >>% Type.Float
+    let private void_ = keyword "void" >>% Type.Void
+    let private type_ = choiceL [ int_; float_; void_ ] "a type."
+    let private nonVoidType = choiceL [ int_; float_ ] "a non-void type."
+    // 正整数常量表达式，用于数组维度等场景。
+    let private posiConstInt =
+        expr
+        >>= function
+            | { Inner = Int i } when i > 0 -> preturn i
+            | _ -> failParser "Expecting a positive integer constant."
+
+    let private constExpr =
+        expr
+        >>= function
+            | { IsConst = true } as e -> preturn e
+            | _ -> failParser "Expecting a constant expression."
+
 blockItemRef.Value <- choice [ block |>> AST.Block; statement |>> Statement ]
 
 let parse path =
@@ -507,24 +526,3 @@ let parse path =
     match parser reader with
     | Ok(expr, context) -> Ok({ Ast = []; SymbolTable = context.SymbolTable }, expr)
     | Error err -> Error $"Parse error: {err}"
-
-
-module private Definitions =
-    let private int_ = keyword "int" >>% Type.Int
-    let private float_ = keyword "float" >>% Type.Float
-    let private void_ = keyword "void" >>% Type.Void
-    let private type_ = choiceL [ int_; float_; void_ ] "a type."
-    let private nonVoidType = choiceL [ int_; float_ ] "a non-void type."
-
-    // 正整数常量表达式，用于数组维度等场景。
-    let private posiConstInt =
-        expr
-        >>= function
-            | { Inner = Int i } when i > 0 -> preturn i
-            | _ -> failParser "Expecting a positive integer constant."
-
-    let private constExpr =
-        expr
-        >>= function
-            | { IsConst = true } as e -> preturn e
-            | _ -> failParser "Expecting a constant expression."
