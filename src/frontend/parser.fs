@@ -360,6 +360,7 @@ module private Expressions =
         pIdentifier .>>. getUserState
         >>= fun struct (id, context) ->
             match searchDef context id with
+            | Some({ Init = ValueSome(Expr({ Inner = Int _ | Float _ } as expr)) }, _) -> preturn expr
             | Some(def, handler) ->
                 preturn { Inner = Var handler; Type = def.Type; Category = LValue; IsConst = def.IsConst }
             | None -> failParser $"Undefined identifier: {id}"
@@ -412,7 +413,7 @@ let private continue_ = breakContinueBase "continue" Continue
 let private return_ =
     let checkExpr context (expr: Expr) =
         match typeCastable expr.Type context.RetType with
-        | true -> preturn (ValueSome expr)
+        | true -> expr |> ValueSome |> preturn
         | false -> failParser "Return expression type mismatch."
 
     keyword "return" >>. getUserState
@@ -481,13 +482,17 @@ module private Definitions =
     let private posiConstInt =
         expr
         >>= function
-            | { Inner = Int i } when i > 0 -> preturn (uint64 i)
+            | { Inner = Int i } when i > 0 -> i |> uint64 |> preturn
             | _ -> failParser "Expecting a positive integer constant."
 
-    let private constExpr =
+    let inline private constExpr requireType =
         expr
-        >>= function
-            | { IsConst = true } as e -> preturn e
+        >>= fun expr ->
+            match expr, requireType with
+            | { Inner = Int i }, Type.Int -> i |> makeConstInt |> preturn
+            | { Inner = Int i }, Type.Float -> i |> makeConstFloat |> preturn
+            | { Inner = Float i }, Type.Int -> i |> makeConstInt |> preturn
+            | { Inner = Float i }, Type.Float -> i |> makeConstFloat |> preturn
             | _ -> failParser "Expecting a constant expression."
 
     let inline private makeVarDef isConst baseType name arrDimOpt initOpt =
@@ -505,7 +510,7 @@ module private Definitions =
                 let isGlobal = isGlobal context
 
                 let def =
-                    { Init = initOpt; Type = ty; ID = name; IsConst = isConst; IsArg = false; IsGlobal = isGlobal }
+                    { Init = initOpt; Type = ty; ID = name; IsConst = isConst; IsParam = false; IsGlobal = isGlobal }
 
                 updateUserState (insertDef handler def) >>% handler
 
@@ -516,14 +521,21 @@ module private Definitions =
 
             if ValueOption.isSome const1 || ValueOption.isSome const2 then
                 let constVarDef =
-                    pIdentifier .>> ch '=' .>>. constExpr
+                    pIdentifier .>> ch '=' .>>. constExpr ty
                     >>= fun struct (name, init) -> makeVarDef true ty name ValueNone (ValueSome(Expr init))
 
                 many1 constVarDef .>> ch ';'
             else
                 let varDef =
-                    pIdentifier .>>. opt (ch '=' >>. expr)
-                    >>= fun struct (name, init) -> makeVarDef false ty name ValueNone (ValueOption.map Expr init)
+                    pIdentifier .>>. getUserState
+                    >>= fun struct (name, context) ->
+                        let make =
+                            fun init -> makeVarDef false ty name ValueNone (ValueOption.map Expr init)
+
+                        if isGlobal context then
+                            opt (ch '=' >>. constExpr ty) >>= make
+                        else
+                            opt (ch '=' >>. expr) >>= make
 
                 many1 varDef .>> ch ';'
 
@@ -538,7 +550,7 @@ module private Definitions =
             ty, name
 
     // 考虑到同一函数可能多次声明，因此这里用 `newRetType`，以表示与可能已存储的 `retType` 区分。
-    let inline private makeFuncDecl newRetType name newParams context =
+    let inline private makeFuncDecl newRetType name (newParams: ImmutableArray<AST.Type * string>) context =
         let parseInitial =
             let paramTypes = newParams |> Seq.map fst |> ImmutableArray.CreateRange
 
@@ -554,18 +566,60 @@ module private Definitions =
 
                 let def =
                     // TODO: 暂不允许函数在局部作用域声明
-                    { Init = ValueNone; Type = ty; ID = name; IsGlobal = true; IsArg = false; IsConst = false }
+                    { Init = ValueNone; Type = ty; ID = name; IsGlobal = true; IsParam = false; IsConst = false }
 
                 updateUserState (insertDef handler def) >>. preturn ImmutableArray.Empty
 
         parseInitial .>> ch ';'
 
+    let private makeFuncDef newRetType name (newParams: ImmutableArray<AST.Type * string>) context =
+        let paramHandlers =
+            Seq.init newParams.Length (fun _ -> counter ()) |> ImmutableArray.CreateRange
+
+        let paramTypes = newParams |> Seq.map fst |> ImmutableArray.CreateRange
+
+        let paramDefs =
+            newParams
+            |> Seq.map (fun (ty, id) ->
+                { Init = ValueNone; Type = ty; ID = id; IsGlobal = false; IsParam = true; IsConst = false })
+
+        let ty = Type.Function(newRetType, paramTypes)
+
+        let makeDef body =
+            let init = ValueSome(Function { Block = body; ArgHandlers = paramHandlers })
+            { Init = init; Type = ty; ID = name; IsGlobal = true; IsParam = false; IsConst = false }
+
+        let contextUpdateParser, handler =
+            match searchDef context name with
+            | None ->
+                let handler = counter ()
+
+                let contextUpdateFunction =
+                    insertDef handler (makeDef ImmutableArray.Empty)
+                    >> enterFuncBody newRetType
+                    >> insertDefs paramHandlers paramDefs
+
+                updateUserState contextUpdateFunction, handler
+            | Some({ Type = Type.Function(retType, paramTypes); Init = ValueNone }, handler) when
+                retType = newRetType && paramTypes = paramTypes
+                ->
+                updateUserState (enterFuncBody newRetType >> insertDefs paramHandlers paramDefs), handler
+            | _ -> failParser $"Conflicting types for `{name}`.", 0u // 0 是占位符
+
+        contextUpdateParser >>. blockWithoutScope .>> updateUserState exitBlock
+        >>= (fun body ->
+            updateUserState (fun context ->
+                { context with SymbolTable = Map.add handler (makeDef body) context.SymbolTable }))
+        >>. (handler |> ImmutableArray.Create |> preturn)
+
     let private functionDef =
         tuple5
-            nonVoidType
+            type_
             pIdentifier
             (between (ch '(') (ch ')') (sepBy param (ch ',')))
-            (choice [ followedBy (ch ';') >>% true; followedBy (ch '{') >>% false ])
+            (choice
+                [ followedBy (lookAhead (ch ';')) >>% true
+                  followedBy (lookAhead (ch '{')) >>% false ])
             getUserState
         >>= fun struct (retType, id, params_, isDecl, context) ->
             let struct (params_, _) = params_
@@ -575,7 +629,7 @@ module private Definitions =
             else if isDecl then
                 makeFuncDecl retType id params_ context
             else
-                todo ()
+                makeFuncDef retType id params_ context
 
     let defs = choice [ functionDef; variable ]
 
@@ -599,7 +653,7 @@ let parse path =
     let globalSymbolTable =
         sysyLib
         |> Seq.map (fun (ty, name) ->
-            { Init = ValueNone; Type = ty; ID = name; IsConst = false; IsArg = false; IsGlobal = true })
+            { Init = ValueNone; Type = ty; ID = name; IsConst = false; IsParam = false; IsGlobal = true })
         |> Seq.zip handlers
         |> Map.ofSeq
 

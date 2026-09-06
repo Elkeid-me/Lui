@@ -123,6 +123,6 @@ type Init =
     | Expr of Expr
     | List of InitList
 
-type Definition = { Init: Init voption; Type: Type; ID: string; IsGlobal: bool; IsArg: bool; IsConst: bool }
+type Definition = { Init: Init voption; Type: Type; ID: string; IsGlobal: bool; IsParam: bool; IsConst: bool }
 type SymbolTableType = Map<Handler, Definition>
 type TranslationUnit = { Ast: ImmutableArray<Handler>; SymbolTable: SymbolTableType }
