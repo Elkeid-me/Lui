@@ -26,8 +26,8 @@ type Type =
     | Float
     | Void
     | Pointer of Type
-    | Array of Type * uint64
-    | Function of Type * ImmutableArray<Type>
+    | Array of struct (Type * uint64)
+    | Function of struct (Type * ImmutableArray<Type>)
 
 let rec typeCastable typeFrom typeTo =
     match typeFrom, typeTo with
@@ -89,8 +89,8 @@ type ExprInner =
     | Int of int
     | Float of single
     | Var of Handler
-    | Func of Handler * ImmutableArray<Expr>
-    | ArrayElem of Handler * ImmutableArray<Expr>
+    | Func of struct (Handler * ImmutableArray<Expr>)
+    | ArrayElem of struct (Handler * ImmutableArray<Expr>)
 
 and Expr = { Inner: ExprInner; Type: Type; Category: ValueCategory; IsConst: bool }
 
@@ -105,18 +105,18 @@ type Statement =
 
 and BlockItem =
     | Statement of Statement
-    | Def of Handler list
+    | Def of ImmutableArray<Handler>
     | Block of Block
 
 and Block = ImmutableArray<BlockItem>
 
-type FunctionInfo = { Block: Block; ArgHandlers: Handler list }
+type FunctionInfo = { Block: Block; ArgHandlers: ImmutableArray<Handler> }
 
 type InitListItem =
     | Expr of Expr
     | InitList of InitList
 
-and InitList = InitListItem list
+and InitList = ImmutableArray<InitListItem>
 
 type Init =
     | Function of FunctionInfo
@@ -125,4 +125,4 @@ type Init =
 
 type Definition = { Init: Init voption; Type: Type; ID: string; IsGlobal: bool; IsArg: bool; IsConst: bool }
 type SymbolTableType = Map<Handler, Definition>
-type TranslationUnit = { Ast: Handler list; SymbolTable: SymbolTableType }
+type TranslationUnit = { Ast: ImmutableArray<Handler>; SymbolTable: SymbolTableType }

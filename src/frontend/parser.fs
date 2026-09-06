@@ -101,6 +101,9 @@ let inline private searchDef context identifier =
         let handler = block.SymbolTable.[identifier]
         context.SymbolTable.[handler], handler)
 
+let private currentExist context identifier =
+    Map.containsKey identifier (List.head context.Blocks).SymbolTable
+
 let inline private makeConstInt (x: ^T) =
     { Inner = Int(int x); Type = Type.Int; Category = RValue; IsConst = true }
 
@@ -391,7 +394,7 @@ module private Expressions =
                 | _ -> failParser $"`{id}` is not a function."
             | None -> failParser $"Undefined identifier: {id}"
 
-    let private pAtom = choice [ identifier; literal ]
+    let private pAtom = choice [ functionCall; identifier; literal ]
     exprRef.Value <- Operator.parser pAtom operators
 
 open Expressions
@@ -478,7 +481,7 @@ module private Definitions =
     let private posiConstInt =
         expr
         >>= function
-            | { Inner = Int i } when i > 0 -> preturn i
+            | { Inner = Int i } when i > 0 -> preturn (uint64 i)
             | _ -> failParser "Expecting a positive integer constant."
 
     let private constExpr =
@@ -487,7 +490,96 @@ module private Definitions =
             | { IsConst = true } as e -> preturn e
             | _ -> failParser "Expecting a constant expression."
 
-blockItemRef.Value <- choice [ block |>> AST.Block; statement |>> Statement ]
+    let inline private makeVarDef isConst baseType name arrDimOpt initOpt =
+        getUserState
+        >>= fun context ->
+            if currentExist context name then
+                failParser $"Redefinition of identifier: `{name}`."
+            else
+                let ty =
+                    match arrDimOpt with
+                    | ValueSome dim -> Seq.foldBack (fun d ty -> Type.Array(ty, d)) dim baseType
+                    | ValueNone -> baseType
+
+                let handler = counter ()
+                let isGlobal = isGlobal context
+
+                let def =
+                    { Init = initOpt; Type = ty; ID = name; IsConst = isConst; IsArg = false; IsGlobal = isGlobal }
+
+                updateUserState (insertDef handler def) >>% handler
+
+    let private variable =
+        tuple3 (opt (keyword "const" >>% ())) nonVoidType (opt (keyword "const" >>% ()))
+        >>= fun struct (const1, ty, const2) ->
+            let arrayDecl = pIdentifier .>>. many1 (between (ch '[') (ch ']') posiConstInt)
+
+            if ValueOption.isSome const1 || ValueOption.isSome const2 then
+                let constVarDef =
+                    pIdentifier .>> ch '=' .>>. constExpr
+                    >>= fun struct (name, init) -> makeVarDef true ty name ValueNone (ValueSome(Expr init))
+
+                many1 constVarDef .>> ch ';'
+            else
+                let varDef =
+                    pIdentifier .>>. opt (ch '=' >>. expr)
+                    >>= fun struct (name, init) -> makeVarDef false ty name ValueNone (ValueOption.map Expr init)
+
+                many1 varDef .>> ch ';'
+
+    let private param =
+        tuple3 nonVoidType (opt (ch '[' >>. ch ']' >>. many (between (ch '[') (ch ']') posiConstInt))) pIdentifier
+        |>> fun struct (baseType, ptrDimOpt, name) ->
+            let ty =
+                match ptrDimOpt with
+                | ValueSome dim -> (dim, baseType) ||> Seq.foldBack (fun d ty -> Type.Array(ty, d)) |> Pointer
+                | ValueNone -> baseType
+
+            ty, name
+
+    // 考虑到同一函数可能多次声明，因此这里用 `newRetType`，以表示与可能已存储的 `retType` 区分。
+    let inline private makeFuncDecl newRetType name newParams context =
+        let parseInitial =
+            let paramTypes = newParams |> Seq.map fst |> ImmutableArray.CreateRange
+
+            match searchDef context name with
+            | Some(def, _) ->
+                match def.Type with
+                | Type.Function(retType, paramTypes) when retType = newRetType && paramTypes = paramTypes ->
+                    preturn ImmutableArray.Empty
+                | _ -> failParser $"Conflicting types for `{name}`."
+            | None ->
+                let handler = counter ()
+                let ty = Type.Function(newRetType, paramTypes)
+
+                let def =
+                    // TODO: 暂不允许函数在局部作用域声明
+                    { Init = ValueNone; Type = ty; ID = name; IsGlobal = true; IsArg = false; IsConst = false }
+
+                updateUserState (insertDef handler def) >>. preturn ImmutableArray.Empty
+
+        parseInitial .>> ch ';'
+
+    let private functionDef =
+        tuple5
+            nonVoidType
+            pIdentifier
+            (between (ch '(') (ch ')') (sepBy param (ch ',')))
+            (choice [ followedBy (ch ';') >>% true; followedBy (ch '{') >>% false ])
+            getUserState
+        >>= fun struct (retType, id, params_, isDecl, context) ->
+            let struct (params_, _) = params_
+
+            if not (isGlobal context) then
+                failParser "Function definition is not allowed in local scope."
+            else if isDecl then
+                makeFuncDecl retType id params_ context
+            else
+                todo ()
+
+    let defs = choice [ functionDef; variable ]
+
+blockItemRef.Value <- choice [ block |>> AST.Block; Definitions.defs |>> Def; statement |>> Statement ]
 
 let parse path =
     let sysyLib =
@@ -521,8 +613,9 @@ let parse path =
               ParsingType = Type.Int
               Blocks = [ { SymbolTable = symbolTable; InLoop = false } ] }
 
-    let parser = ws >>. expr .>> eof .>>. getUserState
+    let parser = ws >>. many Definitions.defs .>> eof .>>. getUserState
 
     match parser reader with
-    | Ok(expr, context) -> Ok({ Ast = []; SymbolTable = context.SymbolTable }, expr)
+    | Ok struct (defs, context) ->
+        Ok { Ast = defs |> Seq.concat |> ImmutableArray.CreateRange; SymbolTable = context.SymbolTable }
     | Error err -> Error $"Parse error: {err}"

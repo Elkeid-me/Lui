@@ -20,8 +20,9 @@ let main args =
     match args with
     | [| path |] ->
         match Parser.parse path with
-        | Ok (_, result) ->
-            printfn $"Success. Result:\n{result}"
+        | Ok result ->
+            for i in result.SymbolTable do
+                printfn $"Definition {i}"
             0
         | Error err ->
             printfn $"Error:\n{err}"
