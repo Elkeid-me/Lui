@@ -114,9 +114,9 @@ let private createParserRef () =
     let dummyParser =
         fun _ -> Impl.panic "A parser created by createParserRef was not initialized"
 
-    let r = ref dummyParser
-    let inline p stream = r.Value stream
-    p, r
+    let reference = ref dummyParser
+    let inline parser stream = reference.Value stream
+    parser, reference
 
 let inline private failParser message = fail (Message message)
 let inline private isIdentStartChar c = Char.IsLetter c || c = '_'
@@ -204,46 +204,46 @@ module private Expressions =
     let private intAssignOpCheck = assignOpCheckBase true
 
     let private rightAssocInfixOps =
-        [ "=", P1, assignOpCheck Assignment
-          "+=", P1, assignOpCheck AddAssign
-          "-=", P1, assignOpCheck SubAssign
-          "*=", P1, assignOpCheck MulAssign
-          "/=", P1, assignOpCheck DivAssign
-          "%=", P1, intAssignOpCheck ModAssign
-          "&=", P1, intAssignOpCheck AndAssign
-          "|=", P1, intAssignOpCheck OrAssign
-          "^=", P1, intAssignOpCheck XorAssign
-          "<<=", P1, intAssignOpCheck ShLAssign
-          ">>=", P1, intAssignOpCheck SaRAssign ]
+        [ "=", [ '=' ], P1, assignOpCheck Assignment
+          "+=", [], P1, assignOpCheck AddAssign
+          "-=", [], P1, assignOpCheck SubAssign
+          "*=", [], P1, assignOpCheck MulAssign
+          "/=", [], P1, assignOpCheck DivAssign
+          "%=", [], P1, intAssignOpCheck ModAssign
+          "&=", [], P1, intAssignOpCheck AndAssign
+          "|=", [], P1, intAssignOpCheck OrAssign
+          "^=", [], P1, intAssignOpCheck XorAssign
+          "<<=", [], P1, intAssignOpCheck ShLAssign
+          ">>=", [], P1, intAssignOpCheck SaRAssign ]
 
     let private leftAssocInfixOps =
-        [ "||", P2, logicOpCheck (ind (||)) LogicOr
+        [ "||", [], P2, logicOpCheck (ind (||)) LogicOr
 
-          "&&", P3, logicOpCheck (ind (&&)) LogicAnd
+          "&&", [], P3, logicOpCheck (ind (&&)) LogicAnd
 
-          "^", P4, intOpCheck (^^^) Xor
+          "^", [ '=' ], P4, intOpCheck (^^^) Xor
 
-          "|", P5, intOpCheck (|||) Or
+          "|", [ '|'; '=' ], P5, intOpCheck (|||) Or
 
-          "&", P6, intOpCheck (&&&) And
+          "&", [ '&'; '=' ], P6, intOpCheck (&&&) And
 
-          "==", P7, relOpCheck (ind (=)) (ind (=)) Eq
-          "!=", P7, relOpCheck (ind (<>)) (ind (<>)) Neq
+          "==", [], P7, relOpCheck (ind (=)) (ind (=)) Eq
+          "!=", [], P7, relOpCheck (ind (<>)) (ind (<>)) Neq
 
-          "<", P8, relOpCheck (ind (<)) (ind (<)) Les
-          ">", P8, relOpCheck (ind (>)) (ind (>)) Grt
-          "<=", P8, relOpCheck (ind (<=)) (ind (<=)) Leq
-          ">=", P8, relOpCheck (ind (>=)) (ind (>=)) Geq
+          "<", [ '<'; '=' ], P8, relOpCheck (ind (<)) (ind (<)) Les
+          ">", [ '>'; '=' ], P8, relOpCheck (ind (>)) (ind (>)) Grt
+          "<=", [], P8, relOpCheck (ind (<=)) (ind (<=)) Leq
+          ">=", [], P8, relOpCheck (ind (>=)) (ind (>=)) Geq
 
-          "<<", P9, intOpCheck (<<<) ShL
-          ">>", P9, intOpCheck (>>>) SaR
+          "<<", [ '=' ], P9, intOpCheck (<<<) ShL
+          ">>", [ '=' ], P9, intOpCheck (>>>) SaR
 
-          "+", P10, arithOpCheck (+) (+) Add
-          "-", P10, arithOpCheck (-) (-) Sub
+          "+", [ '+'; '=' ], P10, arithOpCheck (+) (+) Add
+          "-", [ '-'; '=' ], P10, arithOpCheck (-) (-) Sub
 
-          "*", P11, arithOpCheck (*) (*) Mul
-          "/", P11, arithOpCheck (/) (/) Div
-          "%", P11, intOpCheck (%) Mod ]
+          "*", [ '=' ], P11, arithOpCheck (*) (*) Mul
+          "/", [ '=' ], P11, arithOpCheck (/) (/) Div
+          "%", [ '=' ], P11, intOpCheck (%) Mod ]
 
     let private checkLogicNot _ (expr: Expr) =
         if not (expr.Type.IsInt || expr.Type.IsFloat) then failwith "Invalid type of operand."
@@ -278,20 +278,24 @@ module private Expressions =
         { Inner = inner; Type = Type.Int; Category = RValue; IsConst = expr.IsConst }
 
     let private prefixOps =
-        [ "!", P12, checkLogicNot
-          "+", P12, fun _ (expr: Expr) -> expr
-          "-", P12, checkNeg
-          "~", P12, checkNot ]
+        [ "!", [ '=' ], P12, checkLogicNot
+          "+", [ '+'; '=' ], P12, fun _ (expr: Expr) -> expr
+          "-", [ '-'; '=' ], P12, checkNeg
+          "~", [], P12, checkNot ]
 
-    let inline private op s = pstring s .>> ws
-    let inline private makeOpBase con (symbol, prec: Precedence, map: ^T) = con symbol prec (op symbol) map
+    let inline private op s notFollowedChar =
+        pstring s .>> notFollowedBy (anyOf notFollowedChar) .>> ws
+
+    let inline private makeOpBase con (symbol, notFollowedChar, prec: Precedence, map: ^T) =
+        con symbol prec (op symbol notFollowedChar) map
+
     let private makeLeftAssocInfixOp = makeOpBase Operator.infixLeftAssoc
     let private makeRightAssocInfixOp = makeOpBase Operator.infixRightAssoc
     let private makePrefixOp = makeOpBase Operator.prefix
 
     let private operators: Operators<string, unit, Expr, char, Context, ReadableString> =
         let brackets =
-            Operator.enclosedBy "(" ")" P30 (op "(") (op ")") (fun _ expr _ -> expr)
+            Operator.enclosedBy "(" ")" P30 (op "(" []) (op ")" []) (fun _ expr _ -> expr)
 
         let ops =
             seq {
@@ -360,7 +364,7 @@ module private Expressions =
         pIdentifier .>>. getUserState
         >>= fun struct (id, context) ->
             match searchDef context id with
-            | Some({ Init = ValueSome(Expr({ Inner = Int _ | Float _ } as expr)) }, _) -> preturn expr
+            | Some({ Init = ValueSome(Expr({ Inner = Int _ | Float _ } as expr)); IsConst = true }, _) -> preturn expr
             | Some(def, handler) ->
                 preturn { Inner = Var handler; Type = def.Type; Category = LValue; IsConst = def.IsConst }
             | None -> failParser $"Undefined identifier: {id}"
@@ -411,7 +415,7 @@ let private break_ = breakContinueBase "break" Break
 let private continue_ = breakContinueBase "continue" Continue
 
 let private return_ =
-    let checkExpr context (expr: Expr) =
+    let inline checkExpr context (expr: Expr) =
         match typeCastable expr.Type context.RetType with
         | true -> expr |> ValueSome |> preturn
         | false -> failParser "Return expression type mismatch."
@@ -524,7 +528,7 @@ module private Definitions =
                     pIdentifier .>> ch '=' .>>. constExpr ty
                     >>= fun struct (name, init) -> makeVarDef true ty name ValueNone (ValueSome(Expr init))
 
-                many1 constVarDef .>> ch ';'
+                sepBy1 constVarDef (ch ',') .>> ch ';' |>> fun struct (handlers, _) -> handlers
             else
                 let varDef =
                     pIdentifier .>>. getUserState
@@ -537,7 +541,7 @@ module private Definitions =
                         else
                             opt (ch '=' >>. expr) >>= make
 
-                many1 varDef .>> ch ';'
+                sepBy1 varDef (ch ',') .>> ch ';' |>> fun struct (handlers, _) -> handlers
 
     let private param =
         tuple3 nonVoidType (opt (ch '[' >>. ch ']' >>. many (between (ch '[') (ch ']') posiConstInt))) pIdentifier

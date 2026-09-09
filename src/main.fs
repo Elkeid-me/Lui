@@ -20,9 +20,14 @@ let main args =
     match args with
     | [| path |] ->
         match Parser.parse path with
-        | Ok result ->
-            for i in result.SymbolTable do
-                printfn $"Definition {i}"
+        | Ok { Ast = ast; SymbolTable = symbolTable } ->
+            printfn "AST: ["
+            for handler in ast do
+                printfn $"  {handler};"
+            printfn "]\nSymbol Table: ["
+            for symbol in symbolTable do
+                printfn $"  {symbol};"
+            printfn "]"
             0
         | Error err ->
             printfn $"Error:\n{err}"
