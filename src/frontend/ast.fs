@@ -33,14 +33,15 @@ let rec typeCastable typeFrom typeTo =
     match typeFrom, typeTo with
     | Int, Int
     | Int, Float
-    | Float, Int -> true
+    | Float, Int
+    | Float, Float -> true
     | Pointer baseFrom, Pointer baseTo -> typeCastable baseFrom baseTo
     | Array(baseA, _), Pointer baseP -> baseA = baseP
     | _ -> false
 
 type ValueCategory =
-    | LValue
-    | RValue
+    | L = 0
+    | R = 1
 
 type ExprInner =
     | Mul of struct (Expr * Expr)

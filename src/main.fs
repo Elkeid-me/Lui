@@ -15,23 +15,35 @@
 // You should have received a copy of the GNU General Public License
 // along with Lui.  If not, see <http://www.gnu.org/licenses/>.
 
+open System.Threading
+
+let runCompiler path () =
+    match Parser.parse path with
+    | Ok { Ast = ast; SymbolTable = symbolTable } ->
+        printfn "AST: ["
+
+        for handler in ast do
+            printfn $"  {handler};"
+
+        printfn "]\nSymbol Table: ["
+
+        for symbol in symbolTable do
+            printfn $"  {symbol};"
+
+        printfn "]"
+    | Error err ->
+        printfn $"Error:\n{err}"
+        exit 1
+
 [<EntryPoint>]
 let main args =
     match args with
     | [| path |] ->
-        match Parser.parse path with
-        | Ok { Ast = ast; SymbolTable = symbolTable } ->
-            printfn "AST: ["
-            for handler in ast do
-                printfn $"  {handler};"
-            printfn "]\nSymbol Table: ["
-            for symbol in symbolTable do
-                printfn $"  {symbol};"
-            printfn "]"
-            0
-        | Error err ->
-            printfn $"Error:\n{err}"
-            1
+        let stackSizeBytes = 16 * 1024 * 1024 // 4MB
+        let thread = Thread(ThreadStart(runCompiler path), stackSizeBytes)
+        thread.Start()
+        thread.Join()
+        0
     | _ ->
         printfn "Usage: lui <path>"
-        1
+        exit 1

@@ -19,13 +19,25 @@ module Utils
 
 open System.Runtime.CompilerServices
 
+[<AutoOpen>]
 type Impl =
-    static member panic(?message: string, [<CallerFilePath>] ?file: string, [<CallerLineNumber>] ?line: int) =
+    static member inline panic(?message: string, [<CallerFilePath>] ?file: string, [<CallerLineNumber>] ?line: int) =
         let message = defaultArg message "Unknown error."
         let file = defaultArg file "unknown"
         let line = defaultArg line 0
         printfn $"\"{message}\" happened at file {file}, line {line}"
         exit 1
 
-let unreachable () = Impl.panic "Unreachable code."
-let todo () = Impl.panic "Not implemented."
+    static member inline todo([<CallerFilePath>] ?file: string, [<CallerLineNumber>] ?line: int) =
+        let file = defaultArg file "unknown"
+        let line = defaultArg line 0
+        printfn $"Not implemented at file {file}, line {line}"
+        exit 1
+
+    static member inline unreachable([<CallerFilePath>] ?file: string, [<CallerLineNumber>] ?line: int) =
+        let file = defaultArg file "unknown"
+        let line = defaultArg line 0
+        printfn $"Unreachable code at file {file}, line {line}"
+        exit 1
+
+let inline structFst struct (a: ^a, _: ^b) = a

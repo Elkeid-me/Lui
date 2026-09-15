@@ -26,6 +26,13 @@ open XParsec.CharParsers
 open XParsec.OperatorParsing
 open XParsec.Parsers
 
+type private ImmutableArray<'T> with
+    member this.Eq(other: ImmutableArray<'T>) =
+        if this.IsDefault || other.IsDefault then
+            this.IsDefault = other.IsDefault
+        else
+            this.AsSpan().SequenceEqual(other.AsSpan())
+
 let private createCounter (init: uint32) =
     let mutable count = init
 
@@ -35,21 +42,14 @@ let private createCounter (init: uint32) =
 
 let private counter = createCounter 0u
 
-// 使用 `Map` 而不是 `HashMap`，保持纯函数式，避免在解析过程中出现副作用。
+// 使用 `Map` 而不是哈希表，保持纯函数式，避免在解析过程中出现副作用。
 type BlockInfo = { SymbolTable: Map<string, Handler>; InLoop: bool }
 
 /// - `Counter`: 生成唯一标识符的计数器。
-/// - `SymbolTable`: 全局的符号表，存储 `Handler` 到 `Definition` 的映射。
+/// - `SymbolTable`: 全局的符号表，存储 `Handler` 到 `Definition` 的映射，即所有局部、全局定义或声明。
 /// - `RetType`: 当前函数的返回类型。
 /// - `Blocks`: 当前作用域栈，每个作用域包含一个符号表和是否在循环内的信息。
-/// - `ParsingType`: 当前正在解析的基础类型（用于处理类型声明）。
-///
-///   注意，解析数组声明时，仍然使用数组元素类型作为 `ParsingType`。
-type Context =
-    { SymbolTable: SymbolTableType // 符号表，存储解析至今的所有局部、全局定义或声明。
-      RetType: AST.Type
-      Blocks: BlockInfo list
-      ParsingType: AST.Type }
+type Context = { SymbolTable: SymbolTableType; RetType: AST.Type; Blocks: BlockInfo list }
 
 let inline private isInLoop context = (List.head context.Blocks).InLoop
 
@@ -98,17 +98,17 @@ let inline private searchDef context identifier =
     context.Blocks
     |> List.tryFind (fun block -> Map.containsKey identifier block.SymbolTable)
     |> Option.map (fun block ->
-        let handler = block.SymbolTable.[identifier]
-        context.SymbolTable.[handler], handler)
+        let handler = block.SymbolTable[identifier]
+        context.SymbolTable[handler], handler)
 
 let private currentExist context identifier =
     Map.containsKey identifier (List.head context.Blocks).SymbolTable
 
 let inline private makeConstInt (x: ^T) =
-    { Inner = Int(int x); Type = Type.Int; Category = RValue; IsConst = true }
+    { Inner = Int(int x); Type = Type.Int; Category = ValueCategory.R; IsConst = true }
 
 let inline private makeConstFloat (x: ^T) =
-    { Inner = Float(single x); Type = Type.Float; Category = RValue; IsConst = true }
+    { Inner = Float(single x); Type = Type.Float; Category = ValueCategory.R; IsConst = true }
 
 let private createParserRef () =
     let dummyParser =
@@ -147,7 +147,7 @@ module private Expressions =
         | Type.Int, Type.Float
         | Type.Float, Type.Int
         | Type.Float, Type.Float when not argMustInt -> ty
-        | _ -> failwith "Invalid type of operands."
+        | _ -> failwith $"Invalid type of operands. {l} and {r}."
 
     let inline private binaryOpCheck
         argMustInt
@@ -171,7 +171,7 @@ module private Expressions =
             | Float l, Float r when not argMustInt -> fun4 l r
             | _ -> constructor struct (l, r)
 
-        { Inner = inner; Type = ty; Category = RValue; IsConst = l.IsConst && r.IsConst }
+        { Inner = inner; Type = ty; Category = ValueCategory.R; IsConst = l.IsConst && r.IsConst }
 
     let private arithRelOpCheckBase ty constConstructor funInt funFloat =
         binaryOpCheck
@@ -190,15 +190,15 @@ module private Expressions =
         binaryOpCheck true Type.Int (fun l r -> Int(fun_ l r)) placeholder placeholder placeholder
 
     let private logicOpCheck funLogic =
-        let inline genericFun (l: 'T) (r: 'U) =
-            Int(funLogic (l <> LanguagePrimitives.GenericZero<'T>) (r <> LanguagePrimitives.GenericZero<'U>))
+        let inline genericFun (l: ^T) (r: ^U) =
+            Int(funLogic (l <> LanguagePrimitives.GenericZero< ^T>) (r <> LanguagePrimitives.GenericZero< ^U>))
 
         binaryOpCheck false Type.Int genericFun genericFun genericFun genericFun
 
     let inline private assignOpCheckBase mustInt constructor (l: Expr) _ (r: Expr) =
-        if l.Category <> LValue then failwith "R-value on the left hand side of assign operator."
+        if l.Category <> ValueCategory.L then failwith "R-value on the left hand side of assign operator."
         let ty = checkType mustInt (if mustInt then l.Type else Type.Int) l r
-        { Inner = constructor struct (l, r); Type = ty; Category = LValue; IsConst = false }
+        { Inner = constructor struct (l, r); Type = ty; Category = ValueCategory.L; IsConst = false }
 
     let private assignOpCheck = assignOpCheckBase false
     let private intAssignOpCheck = assignOpCheckBase true
@@ -254,7 +254,7 @@ module private Expressions =
             | Float f -> Int(ind (=) f 0.0f)
             | _ -> LogicNot expr
 
-        { Inner = inner; Type = Type.Int; Category = RValue; IsConst = expr.IsConst }
+        { Inner = inner; Type = Type.Int; Category = ValueCategory.R; IsConst = expr.IsConst }
 
     let private checkNeg _ (expr: Expr) =
         if not (expr.Type.IsInt || expr.Type.IsFloat) then failwith "Invalid type of operand."
@@ -265,7 +265,7 @@ module private Expressions =
             | Float f -> Float -f
             | _ -> Neg expr
 
-        { Inner = inner; Type = expr.Type; Category = RValue; IsConst = expr.IsConst }
+        { Inner = inner; Type = expr.Type; Category = ValueCategory.R; IsConst = expr.IsConst }
 
     let private checkNot _ (expr: Expr) =
         if not expr.Type.IsInt then failwith "Invalid type of operand."
@@ -275,7 +275,7 @@ module private Expressions =
             | Int i -> Int ~~~i
             | _ -> Not expr
 
-        { Inner = inner; Type = Type.Int; Category = RValue; IsConst = expr.IsConst }
+        { Inner = inner; Type = Type.Int; Category = ValueCategory.R; IsConst = expr.IsConst }
 
     let private prefixOps =
         [ "!", [ '=' ], P12, checkLogicNot
@@ -364,9 +364,16 @@ module private Expressions =
         pIdentifier .>>. getUserState
         >>= fun struct (id, context) ->
             match searchDef context id with
-            | Some({ Init = ValueSome(Expr({ Inner = Int _ | Float _ } as expr)); IsConst = true }, _) -> preturn expr
+            | Some({ Init = ValueSome(Expr { Inner = Int i }); Type = Type.Int; IsConst = true }, _) ->
+                i |> makeConstInt |> preturn
+            | Some({ Init = ValueSome(Expr { Inner = Int i }); Type = Type.Float; IsConst = true }, _) ->
+                i |> makeConstFloat |> preturn
+            | Some({ Init = ValueSome(Expr { Inner = Float f }); Type = Type.Int; IsConst = true }, _) ->
+                f |> makeConstInt |> preturn
+            | Some({ Init = ValueSome(Expr { Inner = Float f }); Type = Type.Float; IsConst = true }, _) ->
+                f |> makeConstFloat |> preturn
             | Some(def, handler) ->
-                preturn { Inner = Var handler; Type = def.Type; Category = LValue; IsConst = def.IsConst }
+                preturn { Inner = Var handler; Type = def.Type; Category = ValueCategory.L; IsConst = def.IsConst }
             | None -> failParser $"Undefined identifier: {id}"
 
     let expr, private exprRef = createParserRef ()
@@ -377,29 +384,110 @@ module private Expressions =
             >>= function
                 | { Expr.Type = Type.Int } as expr -> preturn expr
                 | _ -> failParser "Expecting an expression of type `int`."
-        // let inline checkPointer indices handler baseType dims init =
 
-        pIdentifier .>>. many1 (between (ch '[') (ch ']') intExpr)
+        let inline checkPointer (indices: ImmutableArray<Expr>) handler def =
+            let rec pointerDimsLength =
+                function
+                | Pointer baseType
+                | Array(baseType, _) -> 1 + pointerDimsLength baseType
+                | _ -> 0
+
+            let rec typeAfterIndices count ty =
+                if count = 0 then
+                    ty
+                else
+                    match ty with
+                    | Pointer baseType
+                    | Array(baseType, _) -> typeAfterIndices (count - 1) baseType
+                    | _ -> unreachable ()
+
+            let defaultValue () =
+                match typeAfterIndices indices.Length def.Type with
+                | Type.Int -> makeConstInt 0
+                | Type.Float -> makeConstFloat 0.0f
+                | _ -> unreachable ()
+
+            let tryGetConstValue init =
+                if indices |> Seq.forall _.Inner.IsInt then
+                    let tryItem (items: InitList) index =
+                        if index < 0 then None else items |> Seq.tryItem index
+
+                    let indexValues =
+                        indices
+                        |> Seq.map (function
+                            | { Inner = Int value } -> value
+                            | _ -> unreachable ())
+                        |> Seq.toList
+
+                    let rec getElementByIndices (items: InitList) remaining =
+                        match remaining with
+                        | [ index ] ->
+                            match tryItem items index with
+                            | Some(InitListItem.Expr { Inner = Int value }) -> makeConstInt value
+                            | Some(InitListItem.Expr { Inner = Float value }) -> makeConstFloat value
+                            | _ -> defaultValue ()
+                        | index :: tail ->
+                            match tryItem items index with
+                            | Some(InitListItem.InitList nested) -> getElementByIndices nested tail
+                            | _ -> defaultValue ()
+                        | [] -> unreachable ()
+
+                    getElementByIndices init indexValues |> ValueSome
+                else
+                    ValueNone
+
+            let dimsLength = pointerDimsLength def.Type
+            let ty = typeAfterIndices indices.Length def.Type
+            let possibleInner = ArrayElem struct (handler, indices)
+
+            if indices.Length > dimsLength then
+                failParser $"Too many indices for array or pointer `{def.ID}`."
+            elif indices.Length < dimsLength then
+                if def.IsConst then
+                    failParser $"Too few indices for const array access `{def.ID}`."
+                else
+                    preturn { Inner = possibleInner; Type = ty; Category = ValueCategory.R; IsConst = false }
+            elif def.IsConst then
+                match def.Init with
+                | ValueSome(List init) ->
+                    match tryGetConstValue init with
+                    | ValueSome value -> preturn value
+                    | ValueNone ->
+                        preturn { Inner = possibleInner; Type = ty; Category = ValueCategory.L; IsConst = false }
+                | _ -> unreachable ()
+            else
+                preturn { Inner = possibleInner; Type = ty; Category = ValueCategory.L; IsConst = false }
+
+        tuple3 pIdentifier (many1 (between (ch '[') (ch ']') intExpr)) getUserState
+        >>= fun struct (id, indices, context) ->
+            match searchDef context id with
+            | Some({ Init = ValueSome(List _) } as def, handler) -> checkPointer indices handler def
+            | Some({ Type = Array(_, _) | Pointer _ } as def, handler) -> checkPointer indices handler def
+            | Some _ -> failParser $"`{id}` is not an array or pointer."
+            | None -> failParser $"Undefined identifier: `{id}`."
+
 
     let private functionCall =
-        tuple3 pIdentifier (between (ch '(') (ch ')') (sepBy expr (ch ','))) getUserState
+        tuple3 pIdentifier (between (ch '(') (ch ')') (sepBy expr (ch ',')) |>> structFst) getUserState
         >>= fun struct (id, args, context) ->
-            let struct (args, _) = args
-
             match searchDef context id with
             | Some(def, handler) ->
                 match def.Type with
                 | Type.Function(retType, paramTypes) ->
                     if paramTypes.Length <> args.Length then
                         failParser $"Function `{id}` expects {paramTypes.Length} arguments, but got {args.Length}."
-                    else if not (Seq.forall2 typeCastable (args |> Seq.map _.Type) paramTypes) then
+                    elif not (Seq.forall2 typeCastable (args |> Seq.map _.Type) paramTypes) then
                         failParser $"Function `{id}` argument type mismatch."
                     else
-                        preturn { Inner = AST.Func(handler, args); Type = retType; Category = RValue; IsConst = false }
+                        preturn
+                            { Inner = AST.Func(handler, args)
+                              Type = retType
+                              Category = ValueCategory.R
+                              IsConst = false }
                 | _ -> failParser $"`{id}` is not a function."
             | None -> failParser $"Undefined identifier: {id}"
 
-    let private pAtom = choice [ functionCall; identifier; literal ]
+    let private pAtom = choice [ functionCall; arrayAccess; identifier; literal ]
     exprRef.Value <- Operator.parser pAtom operators
 
 open Expressions
@@ -435,8 +523,7 @@ let private manyBlockItem =
         | Statement Statement.Empty -> false
         | _ -> true
 
-    let builder = Seq.filter filter >> ImmutableArray.CreateRange
-    many blockItem |>> builder
+    many blockItem |>> (Seq.filter filter >> ImmutableArray.CreateRange)
 
 let private blockWithoutScope = between (ch '{') (ch '}') manyBlockItem
 
@@ -489,14 +576,10 @@ module private Definitions =
             | { Inner = Int i } when i > 0 -> i |> uint64 |> preturn
             | _ -> failParser "Expecting a positive integer constant."
 
-    let inline private constExpr requireType =
+    let private constExpr =
         expr
-        >>= fun expr ->
-            match expr, requireType with
-            | { Inner = Int i }, Type.Int -> i |> makeConstInt |> preturn
-            | { Inner = Int i }, Type.Float -> i |> makeConstFloat |> preturn
-            | { Inner = Float i }, Type.Int -> i |> makeConstInt |> preturn
-            | { Inner = Float i }, Type.Float -> i |> makeConstFloat |> preturn
+        >>= function
+            | { Inner = Int _ | Float _ } as expr -> preturn expr
             | _ -> failParser "Expecting a constant expression."
 
     let inline private makeVarDef isConst baseType name arrDimOpt initOpt =
@@ -518,50 +601,148 @@ module private Definitions =
 
                 updateUserState (insertDef handler def) >>% handler
 
+    let private initListItem, private initListItemRef = createParserRef ()
+    let private constInitListItem, private constInitListItemRef = createParserRef ()
+
+    let private initList =
+        between (ch '{') (ch '}') (sepBy initListItem (ch ',') |>> structFst)
+
+    let private constInitList =
+        between (ch '{') (ch '}') (sepBy constInitListItem (ch ',') |>> structFst)
+
+    initListItemRef.Value <- choice [ initList |>> InitListItem.InitList; arithExpr |>> InitListItem.Expr ]
+    constInitListItemRef.Value <- choice [ constInitList |>> InitListItem.InitList; constExpr |>> InitListItem.Expr ]
+
+    type private InitBuilderItem =
+        | Expr of Expr
+        | InitList of ImmutableArray<InitBuilderItem>.Builder
+
+    type private InitBuilder = ImmutableArray<InitBuilderItem>.Builder
+
+    let inline private processInitList (arrDim: ImmutableArray<uint64>) (initList: InitList) =
+        let dimsProd =
+            (arrDim, 1UL) ||> Seq.scanBack (*) |> Seq.take arrDim.Length |> Seq.toList
+
+        let inline createBuilder initLength =
+            ImmutableArray.CreateBuilder<InitBuilderItem> initLength
+
+        let inline wrap items = InitList items
+        let inline emptyBuilder () = wrap (createBuilder 0)
+
+        let rec toBuilder (items: InitList) =
+            let builder: InitBuilder =
+                (createBuilder items.Length, items)
+                ||> Seq.fold (fun builder item ->
+                    match item with
+                    | InitListItem.Expr expr -> builder.Add(Expr expr)
+                    | InitListItem.InitList subItems -> builder.Add(wrap (toBuilder subItems))
+
+                    builder)
+
+            builder
+
+        let rec toImmutable (builder: InitBuilder) =
+            let result: ImmutableArray<InitListItem>.Builder =
+                (ImmutableArray.CreateBuilder<InitListItem> builder.Count, builder)
+                ||> Seq.fold (fun result item ->
+                    match item with
+                    | Expr expr -> result.Add(InitListItem.Expr expr)
+                    | InitList subBuilder -> result.Add(InitListItem.InitList(toImmutable subBuilder))
+
+                    result)
+
+            result.ToImmutable()
+
+        /// `makeListWithDimsProd`: 基于给定的 `dimsProd`，将 `initList` 转换为符合数组维度的初始化列表。
+        let rec makeListWithDimsProd dimsProd (currentInitList: InitBuilder) =
+            let rec insertLeaf (items: InitBuilder) dimsProd sum leaf =
+                match dimsProd with
+                | [] ->
+                    items.Add(Expr leaf)
+                    1UL
+                | dimensionProduct :: tail ->
+                    if items.Count = 0 || sum % dimensionProduct = 0UL then items.Add(emptyBuilder ())
+
+                    match items[items.Count - 1] with
+                    | InitList head -> insertLeaf head tail sum leaf
+                    | _ -> unreachable ()
+
+            let rec insertSubList (items: InitBuilder) dimsProd sum subItems =
+                match dimsProd with
+                | [] -> failwith "Too many initializer lists."
+                | _ :: subProd :: _ when sum % subProd = 0UL ->
+                    let processedSub = makeListWithDimsProd (List.tail dimsProd) subItems
+
+                    items.Add(wrap processedSub)
+                    subProd
+                | _ ->
+                    if items.Count = 0 then items.Add(emptyBuilder ())
+
+                    match items[items.Count - 1] with
+                    | InitList head -> insertSubList head (List.tail dimsProd) sum subItems
+                    | _ -> failwith "Initializer list does not match array dimensions."
+
+            let insert (sum, builder) initElem =
+                let subSum =
+                    match initElem with
+                    | Expr leaf -> insertLeaf builder (List.tail dimsProd) sum leaf
+                    | InitList subInitList -> insertSubList builder dimsProd sum subInitList
+
+                let newSum = sum + subSum
+                if newSum > List.head dimsProd then failwith "Too many initializers."
+                newSum, builder
+
+            let builder = createBuilder currentInitList.Count
+            ((0UL, builder), currentInitList) ||> Seq.fold insert |> snd
+
+        initList |> toBuilder |> makeListWithDimsProd dimsProd |> toImmutable |> List
+
     let private variable =
         tuple3 (opt (keyword "const" >>% ())) nonVoidType (opt (keyword "const" >>% ()))
         >>= fun struct (const1, ty, const2) ->
-            let arrayDecl = pIdentifier .>>. many1 (between (ch '[') (ch ']') posiConstInt)
-
             if ValueOption.isSome const1 || ValueOption.isSome const2 then
+                let constArrayDef =
+                    tuple3 pIdentifier (many1 (between (ch '[') (ch ']') posiConstInt)) (ch '=' >>. constInitList)
+                    >>= fun struct (name, arrDim, init) ->
+                        makeVarDef true ty name (ValueSome arrDim) (ValueSome(processInitList arrDim init))
+
                 let constVarDef =
-                    pIdentifier .>> ch '=' .>>. constExpr ty
-                    >>= fun struct (name, init) -> makeVarDef true ty name ValueNone (ValueSome(Expr init))
+                    pIdentifier .>> ch '=' .>>. constExpr
+                    >>= fun struct (name, init) -> makeVarDef true ty name ValueNone (ValueSome(AST.Init.Expr init))
 
-                sepBy1 constVarDef (ch ',') .>> ch ';' |>> fun struct (handlers, _) -> handlers
+                sepBy1 (constArrayDef <|> constVarDef) (ch ',') .>> ch ';' |>> structFst
             else
+                let arrayDef =
+                    tuple3 pIdentifier (many1 (between (ch '[') (ch ']') posiConstInt)) (opt (ch '=' >>. initList))
+                    >>= fun struct (name, arrDim, init) ->
+                        makeVarDef false ty name (ValueSome arrDim) (ValueOption.map (processInitList arrDim) init)
+
                 let varDef =
-                    pIdentifier .>>. getUserState
-                    >>= fun struct (name, context) ->
-                        let make =
-                            fun init -> makeVarDef false ty name ValueNone (ValueOption.map Expr init)
+                    pIdentifier .>>. opt (ch '=' >>. expr)
+                    >>= fun struct (name, init) ->
+                        makeVarDef false ty name ValueNone (ValueOption.map AST.Init.Expr init)
 
-                        if isGlobal context then
-                            opt (ch '=' >>. constExpr ty) >>= make
-                        else
-                            opt (ch '=' >>. expr) >>= make
-
-                sepBy1 varDef (ch ',') .>> ch ';' |>> fun struct (handlers, _) -> handlers
+                sepBy1 (arrayDef <|> varDef) (ch ',') .>> ch ';' |>> structFst
 
     let private param =
-        tuple3 nonVoidType (opt (ch '[' >>. ch ']' >>. many (between (ch '[') (ch ']') posiConstInt))) pIdentifier
-        |>> fun struct (baseType, ptrDimOpt, name) ->
+        tuple3 nonVoidType pIdentifier (opt (ch '[' >>. ch ']' >>. many (between (ch '[') (ch ']') posiConstInt)))
+        |>> fun struct (baseType, name, ptrDimOpt) ->
             let ty =
                 match ptrDimOpt with
                 | ValueSome dim -> (dim, baseType) ||> Seq.foldBack (fun d ty -> Type.Array(ty, d)) |> Pointer
                 | ValueNone -> baseType
 
-            ty, name
+            struct (ty, name)
 
     // 考虑到同一函数可能多次声明，因此这里用 `newRetType`，以表示与可能已存储的 `retType` 区分。
-    let inline private makeFuncDecl newRetType name (newParams: ImmutableArray<AST.Type * string>) context =
+    let inline private makeFuncDecl newRetType name (newParams: ImmutableArray<struct (AST.Type * string)>) context =
         let parseInitial =
-            let paramTypes = newParams |> Seq.map fst |> ImmutableArray.CreateRange
+            let paramTypes = newParams |> Seq.map structFst |> ImmutableArray.CreateRange
 
             match searchDef context name with
             | Some(def, _) ->
                 match def.Type with
-                | Type.Function(retType, paramTypes) when retType = newRetType && paramTypes = paramTypes ->
+                | Type.Function(retType, paramTypes) when retType = newRetType && paramTypes.Eq paramTypes ->
                     preturn ImmutableArray.Empty
                 | _ -> failParser $"Conflicting types for `{name}`."
             | None ->
@@ -576,15 +757,15 @@ module private Definitions =
 
         parseInitial .>> ch ';'
 
-    let private makeFuncDef newRetType name (newParams: ImmutableArray<AST.Type * string>) context =
+    let private makeFuncDef newRetType name (newParams: ImmutableArray<struct (AST.Type * string)>) context =
         let paramHandlers =
             Seq.init newParams.Length (fun _ -> counter ()) |> ImmutableArray.CreateRange
 
-        let paramTypes = newParams |> Seq.map fst |> ImmutableArray.CreateRange
+        let paramTypes = newParams |> Seq.map structFst |> ImmutableArray.CreateRange
 
         let paramDefs =
             newParams
-            |> Seq.map (fun (ty, id) ->
+            |> Seq.map (fun struct (ty, id) ->
                 { Init = ValueNone; Type = ty; ID = id; IsGlobal = false; IsParam = true; IsConst = false })
 
         let ty = Type.Function(newRetType, paramTypes)
@@ -605,7 +786,7 @@ module private Definitions =
 
                 updateUserState contextUpdateFunction, handler
             | Some({ Type = Type.Function(retType, paramTypes); Init = ValueNone }, handler) when
-                retType = newRetType && paramTypes = paramTypes
+                retType = newRetType && paramTypes.Eq paramTypes
                 ->
                 updateUserState (enterFuncBody newRetType >> insertDefs paramHandlers paramDefs), handler
             | _ -> failParser $"Conflicting types for `{name}`.", 0u // 0 是占位符
@@ -620,17 +801,15 @@ module private Definitions =
         tuple5
             type_
             pIdentifier
-            (between (ch '(') (ch ')') (sepBy param (ch ',')))
+            (between (ch '(') (ch ')') (sepBy param (ch ',')) |>> structFst)
             (choice
                 [ followedBy (lookAhead (ch ';')) >>% true
                   followedBy (lookAhead (ch '{')) >>% false ])
             getUserState
         >>= fun struct (retType, id, params_, isDecl, context) ->
-            let struct (params_, _) = params_
-
             if not (isGlobal context) then
                 failParser "Function definition is not allowed in local scope."
-            else if isDecl then
+            elif isDecl then
                 makeFuncDecl retType id params_ context
             else
                 makeFuncDef retType id params_ context
@@ -668,7 +847,6 @@ let parse path =
             (IO.File.ReadAllText(path, Text.Encoding.UTF8))
             { SymbolTable = globalSymbolTable
               RetType = Type.Void
-              ParsingType = Type.Int
               Blocks = [ { SymbolTable = symbolTable; InLoop = false } ] }
 
     let parser = ws >>. many Definitions.defs .>> eof .>>. getUserState
