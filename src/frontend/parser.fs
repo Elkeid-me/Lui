@@ -360,18 +360,20 @@ module private Expressions =
 
         choice [ floatLiteral; intLiteral ] .>> ws
 
+    let inline private toConstByType x =
+        function
+        | Type.Int -> makeConstInt x
+        | Type.Float -> makeConstFloat x
+        | _ -> unreachable ()
+
     let private identifier =
         pIdentifier .>>. getUserState
         >>= fun struct (id, context) ->
             match searchDef context id with
-            | Some({ Init = ValueSome(Expr { Inner = Int i }); Type = Type.Int; IsConst = true }, _) ->
-                i |> makeConstInt |> preturn
-            | Some({ Init = ValueSome(Expr { Inner = Int i }); Type = Type.Float; IsConst = true }, _) ->
-                i |> makeConstFloat |> preturn
-            | Some({ Init = ValueSome(Expr { Inner = Float f }); Type = Type.Int; IsConst = true }, _) ->
-                f |> makeConstInt |> preturn
-            | Some({ Init = ValueSome(Expr { Inner = Float f }); Type = Type.Float; IsConst = true }, _) ->
-                f |> makeConstFloat |> preturn
+            | Some({ Init = ValueSome(Expr { Inner = Int i }); Type = ty; IsConst = true }, _) ->
+                toConstByType i ty |> preturn
+            | Some({ Init = ValueSome(Expr { Inner = Float f }); Type = ty; IsConst = true }, _) ->
+                toConstByType f ty |> preturn
             | Some(def, handler) ->
                 preturn { Inner = Var handler; Type = def.Type; Category = ValueCategory.L; IsConst = def.IsConst }
             | None -> failParser $"Undefined identifier: {id}"
@@ -407,34 +409,24 @@ module private Expressions =
                 | Type.Float -> makeConstFloat 0.0f
                 | _ -> unreachable ()
 
-            let tryGetConstValue init =
-                if indices |> Seq.forall _.Inner.IsInt then
-                    let tryItem (items: InitList) index =
-                        if index < 0 then None else items |> Seq.tryItem index
-
-                    let indexValues =
-                        indices
-                        |> Seq.map (function
-                            | { Inner = Int value } -> value
-                            | _ -> unreachable ())
-                        |> Seq.toList
-
+            let tryGetConstValue init ty =
+                if not (indices |> Seq.forall _.Inner.IsInt) then
+                    ValueNone
+                else
                     let rec getElementByIndices (items: InitList) remaining =
                         match remaining with
-                        | [ index ] ->
-                            match tryItem items index with
-                            | Some(InitListItem.Expr { Inner = Int value }) -> makeConstInt value
-                            | Some(InitListItem.Expr { Inner = Float value }) -> makeConstFloat value
+                        | [ { Inner = Int index } ] ->
+                            match Seq.tryItem index items with
+                            | Some(InitListItem.Expr { Inner = Int value }) -> toConstByType value ty
+                            | Some(InitListItem.Expr { Inner = Float value }) -> toConstByType value ty
                             | _ -> defaultValue ()
-                        | index :: tail ->
-                            match tryItem items index with
+                        | { Inner = Int index } :: tail ->
+                            match Seq.tryItem index items with
                             | Some(InitListItem.InitList nested) -> getElementByIndices nested tail
                             | _ -> defaultValue ()
-                        | [] -> unreachable ()
+                        | _ -> unreachable ()
 
-                    getElementByIndices init indexValues |> ValueSome
-                else
-                    ValueNone
+                    getElementByIndices init (indices |> Seq.toList) |> ValueSome
 
             let dimsLength = pointerDimsLength def.Type
             let ty = typeAfterIndices indices.Length def.Type
@@ -450,10 +442,10 @@ module private Expressions =
             elif def.IsConst then
                 match def.Init with
                 | ValueSome(List init) ->
-                    match tryGetConstValue init with
+                    match tryGetConstValue init ty with
                     | ValueSome value -> preturn value
                     | ValueNone ->
-                        preturn { Inner = possibleInner; Type = ty; Category = ValueCategory.L; IsConst = false }
+                        preturn { Inner = possibleInner; Type = ty; Category = ValueCategory.R; IsConst = false }
                 | _ -> unreachable ()
             else
                 preturn { Inner = possibleInner; Type = ty; Category = ValueCategory.L; IsConst = false }
