@@ -112,7 +112,7 @@ let inline private makeConstFloat (x: ^T) =
 
 let private createParserRef () =
     let dummyParser =
-        fun _ -> Impl.panic "A parser created by createParserRef was not initialized"
+        fun _ -> panic "A parser created by createParserRef was not initialized"
 
     let reference = ref dummyParser
     let inline parser stream = reference.Value stream
@@ -380,12 +380,13 @@ module private Expressions =
 
     let expr, private exprRef = createParserRef ()
 
+    let inline specialExpr ([<InlineIfLambda>] func) = expr >>= func
+
     let private arrayAccess =
         let intExpr =
-            expr
-            >>= function
+            specialExpr (function
                 | { Expr.Type = Type.Int } as expr -> preturn expr
-                | _ -> failParser "Expecting an expression of type `int`."
+                | _ -> failParser "Expecting an expression of type `int`.")
 
         let inline checkPointer (indices: ImmutableArray<Expr>) handler def =
             let rec pointerDimsLength =
@@ -403,13 +404,13 @@ module private Expressions =
                     | Array(baseType, _) -> typeAfterIndices (count - 1) baseType
                     | _ -> unreachable ()
 
-            let defaultValue () =
+            let inline defaultValue () =
                 match typeAfterIndices indices.Length def.Type with
                 | Type.Int -> makeConstInt 0
                 | Type.Float -> makeConstFloat 0.0f
                 | _ -> unreachable ()
 
-            let tryGetConstValue init ty =
+            let inline tryGetConstValue init ty =
                 if not (indices |> Seq.forall _.Inner.IsInt) then
                     ValueNone
                 else
@@ -529,10 +530,9 @@ let private ifHelper = ifWhileHelper false
 let private whileHelper = ifWhileHelper true
 
 let private arithExpr =
-    expr
-    >>= function
+    specialExpr (function
         | { Type = Type.Int | Type.Float } as expr -> preturn expr
-        | _ -> failParser "Expecting an expression of type `int` or `float`."
+        | _ -> failParser "Expecting an expression of type `int` or `float`.")
 
 let private condExpr = between (ch '(') (ch ')') arithExpr
 
@@ -563,16 +563,14 @@ module private Definitions =
     let private nonVoidType = choiceL [ int_; float_ ] "a non-void type."
     // 正整数常量表达式，用于数组维度等场景。
     let private posiConstInt =
-        expr
-        >>= function
+        specialExpr (function
             | { Inner = Int i } when i > 0 -> i |> uint64 |> preturn
-            | _ -> failParser "Expecting a positive integer constant."
+            | _ -> failParser "Expecting a positive integer constant.")
 
     let private constExpr =
-        expr
-        >>= function
+        specialExpr (function
             | { Inner = Int _ | Float _ } as expr -> preturn expr
-            | _ -> failParser "Expecting a constant expression."
+            | _ -> failParser "Expecting a constant expression.")
 
     let inline private makeVarDef isConst baseType name arrDimOpt initOpt =
         getUserState
@@ -622,19 +620,16 @@ module private Definitions =
         let inline emptyBuilder () = wrap (createBuilder 0)
 
         let rec toBuilder (items: InitList) =
-            let builder: InitBuilder =
-                (createBuilder items.Length, items)
-                ||> Seq.fold (fun builder item ->
-                    match item with
-                    | InitListItem.Expr expr -> builder.Add(Expr expr)
-                    | InitListItem.InitList subItems -> builder.Add(wrap (toBuilder subItems))
+            (createBuilder items.Length, items)
+            ||> Seq.fold (fun builder item ->
+                match item with
+                | InitListItem.Expr expr -> builder.Add(Expr expr)
+                | InitListItem.InitList subItems -> builder.Add(wrap (toBuilder subItems))
 
-                    builder)
-
-            builder
+                builder)
 
         let rec toImmutable (builder: InitBuilder) =
-            let result: ImmutableArray<InitListItem>.Builder =
+            let result =
                 (ImmutableArray.CreateBuilder<InitListItem> builder.Count, builder)
                 ||> Seq.fold (fun result item ->
                     match item with
