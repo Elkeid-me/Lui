@@ -360,7 +360,7 @@ module private Expressions =
 
         choice [ floatLiteral; intLiteral ] .>> ws
 
-    let inline private toConstByType x =
+    let inline private toConstByType (x: ^T) =
         function
         | Type.Int -> makeConstInt x
         | Type.Float -> makeConstFloat x
